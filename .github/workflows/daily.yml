@@ -37,11 +37,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Prepare YouTube authorization
+           - name: Prepare YouTube authorization
         env:
-          YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
+          YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON_V2 }}
         run: |
-          python -c "import os; open('token.json','w').write(os.environ['YOUTUBE_TOKEN_JSON'])"
+          python -c "import os,json; d=json.loads(os.environ['YOUTUBE_TOKEN_JSON']); print('TOKEN CHECK:', {k: bool(d.get(k)) for k in ['client_id','client_secret','refresh_token']}); open('token.json','w').write(json.dumps(d))"
 
       - name: Generate and upload Short
         env:
