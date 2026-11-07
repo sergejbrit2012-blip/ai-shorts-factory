@@ -45,6 +45,7 @@ jobs:
 
       - name: Generate and upload Short
         env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           UPLOAD_TO_YOUTUBE: 'true'
           YOUTUBE_PRIVACY: 'private'
         run: |
