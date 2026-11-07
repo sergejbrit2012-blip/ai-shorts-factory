@@ -46,6 +46,6 @@ jobs:
       - name: Generate and upload Short
         env:
           UPLOAD_TO_YOUTUBE: 'true'
-          YOUTUBE_PRIVACY: 'private'
+          YOUTUBE_PRIVACY: 'public'
         run: |
           python src/generate.py
