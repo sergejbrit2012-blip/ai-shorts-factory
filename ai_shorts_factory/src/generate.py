@@ -155,7 +155,7 @@ def main():
     data=make_script()
     (OUT/'last_script.json').write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8')
     audio=OUT/'voice.mp3'; video=OUT/'short.mp4'
-    asyncio.run(make_voice(data['voiceover'],audio))
+    make_voice(data['voiceover'], audio)
     render(data,audio,video)
     if os.getenv('UPLOAD_TO_YOUTUBE','false').lower()=='true': upload(video,data)
     print('Created:',video)
