@@ -1,6 +1,9 @@
 
 import os
 import json
+import re
+import urllib.request
+import urllib.error
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,10 +17,19 @@ W, H = 1080, 1920
 MAX_DURATION = 44.5
 
 
+# =========================================================
+# FONT AND IMAGE HELPERS
+# =========================================================
+
 def font(size, bold=False):
     candidates = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+        if bold else
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf"
+        if bold else
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"
     ]
 
     for p in candidates:
@@ -56,7 +68,10 @@ def make_slide(kicker, title, body, idx, total):
         for x in range(W):
             glow = max(
                 0,
-                1 - (((x - 850) / 900) ** 2 + ((y - 320) / 950) ** 2) ** 0.5
+                1 - (
+                    ((x - 850) / 900) ** 2
+                    + ((y - 320) / 950) ** 2
+                ) ** 0.5
             )
 
             px[x, y] = (
@@ -162,7 +177,48 @@ def make_slide(kicker, title, body, idx, total):
     return path
 
 
-def make_script():
+# =========================================================
+# VIDEO SLOT
+# =========================================================
+
+def get_video_slot():
+    slot = os.getenv("VIDEO_SLOT", "").strip()
+
+    if not slot:
+        event_file = os.getenv("GITHUB_EVENT_PATH", "")
+
+        try:
+            event = (
+                json.loads(
+                    Path(event_file).read_text(encoding="utf-8")
+                )
+                if event_file else {}
+            )
+
+            schedule = event.get("schedule", "")
+
+            slot = {
+                "0 7 * * *": "1",
+                "0 10 * * *": "2",
+                "0 13 * * *": "3",
+                "0 16 * * *": "4",
+                "0 19 * * *": "5",
+            }.get(schedule, "1")
+
+        except Exception:
+            slot = "1"
+
+    try:
+        return max(1, min(5, int(slot)))
+    except ValueError:
+        return 1
+
+
+# =========================================================
+# BACKUP SCRIPT GENERATOR
+# =========================================================
+
+def make_fallback_script():
     topics = [
         ("HOME", "Где лучше хранить картошку?"),
         ("HOME", "Почему хлеб быстро становится твёрдым?"),
@@ -181,39 +237,18 @@ def make_script():
     ]
 
     day = datetime.now(timezone.utc).timetuple().tm_yday
-    slot = os.getenv("VIDEO_SLOT", "").strip()
+    slot_num = get_video_slot()
 
-    if not slot:
-        event_file = os.getenv("GITHUB_EVENT_PATH", "")
-
-        try:
-            event = json.loads(
-                Path(event_file).read_text(encoding="utf-8")
-            ) if event_file else {}
-
-            schedule = event.get("schedule", "")
-
-            slot = {
-                "0 7 * * *": "1",
-                "0 10 * * *": "2",
-                "0 13 * * *": "3",
-                "0 16 * * *": "4",
-                "0 19 * * *": "5",
-            }.get(schedule, "1")
-
-        except Exception:
-            slot = "1"
-
-    slot_num = max(1, min(5, int(slot)))
     index = ((day - 1) * 5 + slot_num - 1) % len(topics)
-
     category, topic = topics[index]
 
     title = topic.rstrip("?.!")
-    short_title = title if len(title) <= 62 else title[:59].rsplit(" ", 1)[0] + "…"
+    short_title = (
+        title if len(title) <= 62
+        else title[:59].rsplit(" ", 1)[0] + "…"
+    )
 
     if category == "HOME":
-
         scenes = [
             {
                 "kicker": "ПОЛЕЗНЫЙ СОВЕТ",
@@ -247,7 +282,6 @@ def make_script():
         )
 
     elif category == "AI":
-
         scenes = [
             {
                 "kicker": "МИР НЕЙРОСЕТЕЙ",
@@ -281,7 +315,6 @@ def make_script():
         )
 
     else:
-
         stories = [
             [
                 "Клубника: Я самая красивая ягода на кухне!",
@@ -361,6 +394,220 @@ def make_script():
     }
 
 
+# =========================================================
+# AI SCRIPT GENERATOR
+# =========================================================
+
+def make_script():
+    api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+
+    if not api_key:
+        print("OPENROUTER_API_KEY not found.")
+        return make_fallback_script()
+
+    day = datetime.now(timezone.utc).timetuple().tm_yday
+    slot_num = get_video_slot()
+    global_index = (day - 1) * 5 + slot_num - 1
+
+    categories = [
+        "HOME", "HOME", "AI", "SERIES", "HOME",
+        "AI", "SERIES", "HOME", "AI", "SERIES"
+    ]
+
+    category = categories[global_index % len(categories)]
+
+    category_instructions = {
+        "HOME": """
+Create a useful and interesting household tip.
+Choose a specific topic about food storage, cleaning,
+kitchen organization or everyday household life.
+Give safe, practical advice. Do not invent facts.
+""",
+
+        "AI": """
+Create an interesting Short about artificial intelligence.
+Explain one useful AI feature, task or type of tool.
+Use simple Russian. Do not invent current prices,
+availability or capabilities of named services.
+""",
+
+        "SERIES": """
+Create a funny episode of an ongoing animated mini-series
+about talking fruits and vegetables.
+Use characters such as Strawberry, Banana, Cucumber,
+Carrot and Potato. Include funny dialogue and an
+unexpected ending. Make the episode entertaining.
+"""
+    }
+
+    prompt = f"""
+Ты пишешь интересные сценарии для русского YouTube Shorts.
+
+Категория: {category}
+Инструкции:
+{category_instructions[category]}
+
+Номер видео: {global_index + 1}
+
+Требования:
+- Начни с интересной фразы, которая цепляет зрителя.
+- Пиши простым и естественным русским языком.
+- Длина озвучки примерно 30-42 секунды.
+- Ориентир: 65-90 произносимых слов.
+- Не используй скучные вступления.
+- Не повторяй один и тот же шаблон.
+- Создай ровно 3 визуальные сцены.
+- У каждой сцены должен быть короткий заголовок и текст.
+- Озвучка должна быть цельной.
+- Для категории SERIES используй диалоги персонажей.
+- Не добавляй объяснений вне JSON.
+
+Верни только JSON следующего вида:
+{{
+  "title": "Название видео",
+  "description": "Описание видео и хештеги",
+  "voiceover": "Полный текст озвучки",
+  "scenes": [
+    {{
+      "kicker": "КОРОТКАЯ НАДПИСЬ",
+      "title": "Заголовок сцены",
+      "body": "Текст сцены"
+    }},
+    {{
+      "kicker": "КОРОТКАЯ НАДПИСЬ",
+      "title": "Заголовок сцены",
+      "body": "Текст сцены"
+    }},
+    {{
+      "kicker": "КОРОТКАЯ НАДПИСЬ",
+      "title": "Заголовок сцены",
+      "body": "Текст сцены"
+    }}
+  ]
+}}
+"""
+
+    payload = {
+        "model": "openrouter/free",
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "Ты создаёшь оригинальные сценарии "
+                    "для русскоязычных YouTube Shorts. "
+                    "Возвращай только корректный JSON."
+                )
+            },
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
+        "temperature": 0.9,
+        "max_tokens": 1400
+    }
+
+    request = urllib.request.Request(
+        "https://openrouter.ai/api/v1/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com",
+            "X-Title": "AI Shorts Factory"
+        },
+        method="POST"
+    )
+
+    try:
+        print("Generating a new AI script...")
+
+        with urllib.request.urlopen(request, timeout=90) as response:
+            result = json.loads(
+                response.read().decode("utf-8")
+            )
+
+        content = result["choices"][0]["message"]["content"]
+
+        if isinstance(content, list):
+            content = "".join(
+                part.get("text", "")
+                for part in content
+                if isinstance(part, dict)
+            )
+
+        content = re.sub(
+            r"^```(?:json)?\s*|\s*```$",
+            "",
+            content.strip(),
+            flags=re.IGNORECASE
+        )
+
+        start = content.find("{")
+        end = content.rfind("}")
+
+        if start == -1 or end == -1:
+            raise ValueError("AI did not return JSON.")
+
+        data = json.loads(content[start:end + 1])
+
+        title = str(data["title"]).strip()
+        description = str(data["description"]).strip()
+        voiceover = str(data["voiceover"]).strip()
+        scenes = data["scenes"]
+
+        if not title or not voiceover:
+            raise ValueError("Title or voiceover is empty.")
+
+        if len(voiceover) > 1600:
+            raise ValueError("Voiceover is too long.")
+
+        if not isinstance(scenes, list) or len(scenes) != 3:
+            raise ValueError("AI must return exactly 3 scenes.")
+
+        clean_scenes = []
+
+        for scene in scenes:
+            clean_scenes.append({
+                "kicker": str(scene["kicker"])[:35],
+                "title": str(scene["title"])[:100],
+                "body": str(scene["body"])[:350]
+            })
+
+        if not all(
+            scene["title"] and scene["body"]
+            for scene in clean_scenes
+        ):
+            raise ValueError("A scene is missing its text.")
+
+        title = title[:62]
+
+        if "#shorts" not in description.lower():
+            description += " #shorts"
+
+        print("AI script successfully generated.")
+        print("Category:", category)
+        print("Title:", title)
+
+        return {
+            "title": title,
+            "description": description,
+            "voiceover": voiceover,
+            "scenes": clean_scenes,
+            "category": category
+        }
+
+    except Exception as error:
+        print("AI generation failed:", str(error))
+        print("Using the built-in fallback script.")
+
+        return make_fallback_script()
+
+
+# =========================================================
+# VOICE GENERATION
+# =========================================================
+
 def make_voice(text, path, category="HOME"):
     wav = path.with_suffix(".wav")
 
@@ -396,7 +643,6 @@ def make_voice(text, path, category="HOME"):
     )
 
     duration = float(probe.strip())
-
     speed_factor = max(1.0, duration / MAX_DURATION)
 
     command = [
@@ -427,15 +673,19 @@ def make_voice(text, path, category="HOME"):
     wav.unlink(missing_ok=True)
 
 
+# =========================================================
+# VIDEO RENDERING
+# =========================================================
+
 def render(data, audio_path, video_path):
     slides = []
 
-    for i, s in enumerate(data["scenes"]):
+    for i, scene in enumerate(data["scenes"]):
         slides.append(
             make_slide(
-                s.get("kicker", "ТЕХНОЛОГИИ"),
-                s["title"],
-                s["body"],
+                scene.get("kicker", "ТЕХНОЛОГИИ"),
+                scene["title"],
+                scene["body"],
                 i,
                 3
             )
@@ -533,6 +783,10 @@ def render(data, audio_path, video_path):
     print("Video format: 1080x1920 vertical")
 
 
+# =========================================================
+# YOUTUBE UPLOAD
+# =========================================================
+
 def upload(video_path, data):
     from google.oauth2.credentials import Credentials
     from google.auth.transport.requests import Request
@@ -550,6 +804,7 @@ def upload(video_path, data):
 
     if creds.expired and creds.refresh_token:
         creds.refresh(Request())
+
         token_file.write_text(
             creds.to_json(),
             encoding="utf-8"
@@ -564,7 +819,10 @@ def upload(video_path, data):
     body = {
         "snippet": {
             "title": data["title"][:100],
-            "description": data["description"] + "\n\nВизуальные материалы созданы автоматически.",
+            "description": (
+                data["description"]
+                + "\n\nВизуальные материалы созданы автоматически."
+            ),
             "categoryId": "28",
             "defaultLanguage": "ru"
         },
@@ -592,7 +850,16 @@ def upload(video_path, data):
     print("YOUTUBE_VIDEO_ID=" + response["id"])
 
 
+# =========================================================
+# MAIN
+# =========================================================
+
 def main():
+    print("================================")
+    print("AI SHORTS FACTORY")
+    print("Starting video generation...")
+    print("================================")
+
     data = make_script()
 
     (OUT / "last_script.json").write_text(
@@ -603,18 +870,26 @@ def main():
     audio = OUT / "voice.mp3"
     video = OUT / "short.mp4"
 
+    print("Creating Russian voice...")
+
     make_voice(
         data["voiceover"],
         audio,
         data["category"]
     )
 
+    print("Rendering video...")
+
     render(data, audio, video)
 
     if os.getenv("UPLOAD_TO_YOUTUBE", "false").lower() == "true":
+        print("Uploading video to YouTube...")
         upload(video, data)
+    else:
+        print("YouTube upload is disabled.")
 
     print("Created:", video)
+    print("Generation finished.")
 
 
 if __name__ == "__main__":
