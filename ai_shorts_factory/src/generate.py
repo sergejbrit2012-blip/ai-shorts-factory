@@ -2,6 +2,7 @@
 import os
 import json
 import re
+import random
 import urllib.request
 import subprocess
 import shutil
@@ -13,6 +14,23 @@ OUT = ROOT / "output"
 OUT.mkdir(exist_ok=True)
 
 MAX_DURATION = 44.5
+
+HERO_RULES = {
+    "банан": ("banana", "Банан", "yellow"),
+    "бананы": ("banana", "Банан", "yellow"),
+    "арбуз": ("watermelon", "Арбуз", "green"),
+    "клубник": ("strawberry", "Клубника", "red"),
+    "морков": ("carrot", "Морковка", "orange"),
+    "огур": ("cucumber", "Огурец", "green"),
+    "картош": ("potato", "Картошка", "brown"),
+    "яблок": ("apple", "Яблоко", "red"),
+    "апельсин": ("orange", "Апельсин", "orange"),
+    "лимон": ("lemon", "Лимон", "yellow"),
+    "виноград": ("grapes", "Виноград", "purple"),
+    "помидор": ("tomato", "Помидор", "red"),
+    "перец": ("pepper", "Перец", "green"),
+    "груш": ("pear", "Груша", "green"),
+}
 
 
 def get_video_slot():
@@ -42,108 +60,83 @@ def get_video_slot():
         return 1
 
 
+def choose_hero(title, voiceover=""):
+    text = (str(title) + " " + str(voiceover)).lower()
+
+    for keyword, hero in HERO_RULES.items():
+        if keyword in text:
+            return {
+                "id": hero[0],
+                "name": hero[1],
+                "color": hero[2]
+            }
+
+    return {
+        "id": "banana",
+        "name": "Банан",
+        "color": "yellow"
+    }
+
+
+def clean_text(value, limit=500):
+    value = str(value or "")
+    value = re.sub(r"https?://\S+", "", value)
+    value = re.sub(r"\s+", " ", value)
+    return value.strip()[:limit]
+
+
 def make_fallback_script():
     topics = [
-        ("HOME", "Где лучше хранить картошку?"),
-        ("HOME", "Почему хлеб быстро становится твёрдым?"),
-        ("HOME", "Как правильно хранить бананы?"),
-        ("AI", "Какая нейросеть лучше помогает с текстами?"),
-        ("AI", "Какие нейросети умеют создавать видео?"),
-        ("AI", "Как нейросети помогают в обычной жизни?"),
-        ("SERIES", "Клубника спорит с Бананом"),
-        ("SERIES", "Морковка забыла своё имя"),
-        ("SERIES", "Огурец открыл секрет Клубники"),
-        ("SERIES", "Картошка стала главным на кухне"),
+        "Как правильно хранить бананы?",
+        "Как выбрать сладкий арбуз?",
+        "Чем полезна клубника?",
+        "Почему картошку нельзя хранить на свету?",
+        "Как дольше сохранить свежесть огурцов?",
+        "Как правильно хранить яблоки?",
+        "Почему бананы темнеют?",
+        "Как выбрать спелый помидор?",
+        "Как правильно хранить морковь?",
+        "Чем полезен лимон?"
     ]
 
     day = datetime.now(timezone.utc).timetuple().tm_yday
     slot = get_video_slot()
-    index = ((day - 1) * 5 + slot - 1) % len(topics)
+    topic = topics[((day - 1) * 5 + slot - 1) % len(topics)]
 
-    category, topic = topics[index]
-    title = topic.rstrip("?.!")
+    hero = choose_hero(topic)
 
-    if category == "HOME":
-        voice = (
-            f"Стоп! А ты знаешь? {topic} "
-            "У каждого продукта есть свои условия хранения. "
-            "Важно учитывать температуру, влажность и соседство "
-            "с другими продуктами. Не забывай проверять свежесть "
-            "еды и рекомендации на упаковке. Сохрани этот совет!"
-        )
-        scenes = [
-            {"kicker": "ПОЛЕЗНЫЙ СОВЕТ", "title": "Ты знал об этом?", "body": topic},
-            {"kicker": "КАК ПРАВИЛЬНО", "title": "Запомни это", "body": "У продуктов разные условия хранения."},
-            {"kicker": "ВАЖНО", "title": "Не повторяй ошибку", "body": "Следи за свежестью продуктов."}
-        ]
-        description = topic + " Полезные советы. #shorts #советы"
-
-    elif category == "AI":
-        voice = (
-            f"Хочешь узнать больше о нейросетях? {topic} "
-            "Сначала реши, какая задача тебе нужна. "
-            "Одни инструменты помогают писать тексты, "
-            "другие создают изображения, а третьи работают с видео. "
-            "Проверяй бесплатные возможности и ограничения. "
-            "И обязательно проверяй результат!"
-        )
-        scenes = [
-            {"kicker": "МИР НЕЙРОСЕТЕЙ", "title": "Какую выбрать?", "body": topic},
-            {"kicker": "ВЫБИРАЕМ ИНСТРУМЕНТ", "title": "У каждой своя задача", "body": "Тексты, изображения и видео."},
-            {"kicker": "ПОЛЕЗНЫЙ СОВЕТ", "title": "Проверяй результат", "body": "Сравни возможности разных сервисов."}
-        ]
-        description = topic + " Нейросети простыми словами. #shorts #нейросети"
-
-    else:
-        stories = [
-            [
-                "Клубника: Я самая красивая ягода на кухне!",
-                "Банан: Зато меня знают во всём мире!",
-                "Клубника: Да тебя даже перед едой раздевают!",
-                "Банан: А тебя кладут в десерты только для украшения!",
-                "Клубника: Повтори ещё раз!",
-                "Банан: Давай устроим соревнование!",
-                "Клубника: Кто победит, тот будет главным!",
-                "Банан: У меня уже есть хитрый план!"
-            ],
-            [
-                "Морковка: Подождите, а кто я вообще такая?",
-                "Огурец: Ты Морковка! Мы же знакомы!",
-                "Морковка: А почему я ничего не помню?",
-                "Картошка: Кажется, она опять всё перепутала!",
-                "Морковка: А ты кто такой?",
-                "Картошка: Я самый важный овощ!",
-                "Огурец: Почему у тебя на голове банановая кожура?",
-                "Морковка: ЧТО?!"
-            ],
-            [
-                "Огурец: Клубника, я знаю твой большой секрет!",
-                "Клубника: Тише! Не говори так громко!",
-                "Огурец: Тогда дай мне одну клубничку!",
-                "Клубника: Так вот чего ты хотел!",
-                "Огурец: Нет, я ещё кое-что заметил!",
-                "Клубника: Что именно?",
-                "Огурец: Ты разговариваешь с холодильником!",
-                "Клубника: Всё! Ты слишком много знаешь!"
-            ]
-        ]
-
-        dialogue = stories[index % len(stories)]
-        voice = " ".join(dialogue)
-
-        scenes = [
-            {"kicker": "МИНИ-СЕРИАЛ", "title": "Новая серия!", "body": topic},
-            {"kicker": "РАЗГОВОР", "title": "Всё начинается", "body": " ".join(dialogue[:3])},
-            {"kicker": "НЕОЖИДАННЫЙ ПОВОРОТ", "title": "Что происходит?", "body": " ".join(dialogue[3:6])}
-        ]
-        description = topic + " Смотри продолжение! #shorts #мультфильм"
+    voiceover = (
+        f"Привет! Я {hero['name'].lower()}! "
+        f"Сегодня расскажу тебе одну полезную вещь. {topic} "
+        "Самое главное — соблюдать правильные условия хранения "
+        "и регулярно проверять свежесть продукта. "
+        "Не клади продукты куда попало. "
+        "Запомни этот совет и поделись им с друзьями!"
+    )
 
     return {
-        "title": title[:62],
-        "description": description,
-        "voiceover": voice,
-        "scenes": scenes,
-        "category": category
+        "title": topic.rstrip("?.!"),
+        "description": topic + " Полезные советы простыми словами. #shorts",
+        "voiceover": voiceover,
+        "category": "HOME",
+        "hero": hero,
+        "scenes": [
+            {
+                "kicker": "ЗНАКОМСТВО",
+                "title": f"Привет! Я {hero['name']}!",
+                "body": topic
+            },
+            {
+                "kicker": "МОЙ СОВЕТ",
+                "title": "Запомни это!",
+                "body": "Правильное хранение помогает сохранить свежесть."
+            },
+            {
+                "kicker": "ПОЛЕЗНО ЗНАТЬ",
+                "title": "Теперь ты знаешь!",
+                "body": "Проверяй свежесть продуктов."
+            }
+        ]
     }
 
 
@@ -151,50 +144,44 @@ def make_script():
     api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
 
     if not api_key:
-        print("OPENROUTER_API_KEY отсутствует. Используем запасной сценарий.")
+        print("Нет API-ключа. Используем запасной сценарий.")
         return make_fallback_script()
 
-    day = datetime.now(timezone.utc).timetuple().tm_yday
-    global_index = (day - 1) * 5 + get_video_slot() - 1
+    prompt = """
+Придумай оригинальный сценарий для русского YouTube Shorts.
 
-    categories = [
-        "HOME", "HOME", "AI", "SERIES", "HOME",
-        "AI", "SERIES", "HOME", "AI", "SERIES"
-    ]
-    category = categories[global_index % len(categories)]
+Выбери интересную тему о продуктах, еде или хранении продуктов.
+Главный герой должен быть тем продуктом, о котором рассказывается.
 
-    instructions = {
-        "HOME": "Создай полезный совет о доме, кухне или хранении продуктов.",
-        "AI": "Создай интересный ролик о нейросетях и искусственном интеллекте. Не выдумывай цены и возможности сервисов.",
-        "SERIES": "Создай смешной эпизод мультсериала с говорящими фруктами и овощами. Добавь диалог и неожиданный конец."
-    }
+Примеры:
+- Как хранить бананы — главный герой Банан.
+- Как выбрать сладкий арбуз — главный герой Арбуз.
+- Чем полезна клубника — главный герой Клубника.
 
-    prompt = f"""
-Создай оригинальный сценарий для русского YouTube Shorts.
-
-Категория: {category}
-Задача: {instructions[category]}
+Герой должен говорить от первого лица.
+Сценарий должен быть интересным, полезным и понятным.
 
 Требования:
-- Простой естественный русский язык.
-- Начни с цепляющей фразы.
-- Озвучка примерно 30-42 секунды.
-- Примерно 65-90 слов.
-- Ровно три визуальные сцены.
-- Озвучка должна быть цельной.
-- Верни только JSON без пояснений.
+- Русский язык.
+- Озвучка примерно 65-90 слов.
+- Начало с интересной фразы.
+- Ровно три сцены.
+- У каждой сцены есть kicker, title и body.
+- Не придумывай медицинские обещания.
+- Не выдумывай опасные советы по хранению продуктов.
+- Верни только JSON.
 
 Формат:
-{{
-  "title": "Название",
-  "description": "Описание и хештеги",
-  "voiceover": "Текст озвучки",
-  "scenes": [
-    {{"kicker":"НАДПИСЬ","title":"Заголовок","body":"Текст"}},
-    {{"kicker":"НАДПИСЬ","title":"Заголовок","body":"Текст"}},
-    {{"kicker":"НАДПИСЬ","title":"Заголовок","body":"Текст"}}
-  ]
-}}
+{
+"title":"Название",
+"description":"Описание и #shorts",
+"voiceover":"Полный текст озвучки",
+"scenes":[
+{"kicker":"НАЧАЛО","title":"Заголовок","body":"Описание"},
+{"kicker":"СОВЕТ","title":"Заголовок","body":"Описание"},
+{"kicker":"ФИНАЛ","title":"Заголовок","body":"Описание"}
+]
+}
 """
 
     payload = {
@@ -202,19 +189,22 @@ def make_script():
         "messages": [
             {
                 "role": "system",
-                "content": "Создавай оригинальные сценарии для русских Shorts. Возвращай только корректный JSON."
+                "content": "Ты профессиональный автор сценариев коротких мультфильмов. Возвращай только JSON."
             },
-            {"role": "user", "content": prompt}
+            {
+                "role": "user",
+                "content": prompt
+            }
         ],
-        "temperature": 0.9,
-        "max_tokens": 1400
+        "temperature": 0.85,
+        "max_tokens": 1600
     }
 
     request = urllib.request.Request(
         "https://openrouter.ai/api/v1/chat/completions",
         data=json.dumps(payload).encode("utf-8"),
         headers={
-            "Authorization": f"Bearer {api_key}",
+            "Authorization": "Bearer " + api_key,
             "Content-Type": "application/json",
             "HTTP-Referer": "https://github.com",
             "X-Title": "AI Shorts Factory"
@@ -223,27 +213,27 @@ def make_script():
     )
 
     try:
-        print("Генерируем сценарий через нейросеть...")
+        print("Создаём сценарий...")
 
         with urllib.request.urlopen(request, timeout=90) as response:
             result = json.loads(response.read().decode("utf-8"))
 
         choices = result.get("choices") or []
         if not choices:
-            raise ValueError("OpenRouter вернул пустой ответ.")
+            raise ValueError("Нейросеть не вернула ответ.")
 
-        message = (choices[0] or {}).get("message") or {}
+        message = choices[0].get("message") or {}
         content = message.get("content")
 
         if isinstance(content, list):
             content = "".join(
-                part.get("text", "")
-                for part in content
-                if isinstance(part, dict)
+                item.get("text", "")
+                for item in content
+                if isinstance(item, dict)
             )
 
         if not isinstance(content, str) or not content.strip():
-            raise ValueError("OpenRouter вернул пустой текст.")
+            raise ValueError("Пустой ответ нейросети.")
 
         content = re.sub(
             r"^```(?:json)?\s*|\s*```$",
@@ -255,54 +245,56 @@ def make_script():
         start = content.find("{")
         end = content.rfind("}")
 
-        if start == -1 or end == -1:
-            raise ValueError("Ответ не содержит JSON.")
+        if start < 0 or end < 0:
+            raise ValueError("Не найден JSON.")
 
         data = json.loads(content[start:end + 1])
 
-        title = str(data.get("title") or "").strip()
-        description = str(data.get("description") or "").strip()
-        voiceover = str(data.get("voiceover") or "").strip()
+        title = clean_text(data.get("title"), 62)
+        description = clean_text(data.get("description"), 1000)
+        voiceover = clean_text(data.get("voiceover"), 1600)
         scenes = data.get("scenes")
 
         if not title or not voiceover:
             raise ValueError("Пустое название или озвучка.")
 
-        if len(voiceover) > 1600:
-            raise ValueError("Слишком длинная озвучка.")
-
         if not isinstance(scenes, list) or len(scenes) != 3:
             raise ValueError("Нужно ровно три сцены.")
 
         clean_scenes = []
+
         for scene in scenes:
             if not isinstance(scene, dict):
                 raise ValueError("Некорректная сцена.")
 
             clean_scenes.append({
-                "kicker": str(scene.get("kicker") or "")[:35],
-                "title": str(scene.get("title") or "")[:100],
-                "body": str(scene.get("body") or "")[:350]
+                "kicker": clean_text(scene.get("kicker"), 35),
+                "title": clean_text(scene.get("title"), 100),
+                "body": clean_text(scene.get("body"), 350)
             })
 
-        if not all(s["title"] and s["body"] for s in clean_scenes):
-            raise ValueError("В одной из сцен нет текста.")
+        if not all(item["title"] and item["body"] for item in clean_scenes):
+            raise ValueError("В сцене отсутствует текст.")
 
         if "#shorts" not in description.lower():
             description += " #shorts"
 
-        print("Сценарий создан:", title)
+        hero = choose_hero(title, voiceover)
+
+        print("Сценарий:", title)
+        print("Главный герой:", hero["name"])
 
         return {
-            "title": title[:62],
+            "title": title,
             "description": description,
             "voiceover": voiceover,
-            "scenes": clean_scenes,
-            "category": category
+            "category": "HOME",
+            "hero": hero,
+            "scenes": clean_scenes
         }
 
     except Exception as error:
-        print("Ошибка генерации сценария:", str(error))
+        print("Ошибка сценария:", error)
         print("Используем запасной сценарий.")
         return make_fallback_script()
 
@@ -310,30 +302,25 @@ def make_script():
 def make_voice(text, path, category="HOME"):
     wav = path.with_suffix(".wav")
 
-    # Более медленная речь.
-    speeds = {
-        "HOME": "105",
-        "AI": "100",
-        "SERIES": "95"
-    }
-    speech_speed = speeds.get(category, "100")
-
-    text = str(text or "")
-    text = re.sub(r"https?://\S+", "", text)
+    text = clean_text(text, 2000)
     text = re.sub(r"[*_`#]", "", text)
-    text = re.sub(r"[^\w\s.,!?;:—–()«»\"'-]", " ", text)
-    text = re.sub(r"\s+", " ", text).strip()
 
     if not text or not re.search(r"[а-яА-ЯёЁ]", text):
-        raise RuntimeError("Нет нормального русского текста для озвучки.")
+        raise RuntimeError("Нет русского текста для озвучки.")
+
+    # Espeak — бесплатный синтезатор, но его голос сам по себе
+    # звучит синтетически. Здесь добавлены паузы и обработка.
+    speed = "125"
+    pitch = "48"
 
     subprocess.run(
         [
             "espeak-ng",
             "-v", "ru",
-            "-s", speech_speed,
-            "-a", "180",
-            "-g", "7",
+            "-s", speed,
+            "-p", pitch,
+            "-a", "175",
+            "-g", "10",
             "-w", str(wav),
             "--stdin"
         ],
@@ -343,59 +330,93 @@ def make_voice(text, path, category="HOME"):
     )
 
     if not wav.exists() or wav.stat().st_size < 1000:
-        raise RuntimeError("Не удалось создать аудио.")
-
-    probe = subprocess.check_output(
-        [
-            "ffprobe", "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1",
-            str(wav)
-        ],
-        text=True
-    )
-
-    duration = float(probe.strip())
-    if duration <= 0:
-        raise RuntimeError("Неверная длительность аудио.")
-
-    speed_factor = max(1.0, duration / (MAX_DURATION * 1.5))
-    filters = []
-
-    while speed_factor > 2.0:
-        filters.append("atempo=2.0")
-        speed_factor /= 2.0
-
-    if speed_factor > 1.0:
-        filters.append(f"atempo={speed_factor:.4f}")
-
-    filters.append("loudnorm=I=-16:TP=-1.5:LRA=11")
+        raise RuntimeError("Не удалось создать WAV.")
 
     subprocess.run(
         [
             "ffmpeg", "-y",
             "-loglevel", "error",
             "-i", str(wav),
-            "-af", ",".join(filters),
+            "-af",
+            "highpass=f=80,lowpass=f=11000,"
+            "acompressor=threshold=0.12:ratio=2.5:attack=15:release=180,"
+            "equalizer=f=2500:t=q:w=1:g=2,"
+            "loudnorm=I=-16:TP=-1.5:LRA=10",
             "-ar", "44100",
             "-ac", "2",
             "-codec:a", "libmp3lame",
-            "-b:a", "128k",
+            "-b:a", "160k",
             str(path)
         ],
         check=True
     )
 
     wav.unlink(missing_ok=True)
-    print("Русская озвучка создана:", path)
+
+    print("Озвучка создана:", path)
+
+
+def make_subtitles(text, audio_path, subtitle_path):
+    """
+    Создаёт простой SRT с распределением фраз по длительности аудио.
+    Это приблизительная синхронизация, не распознавание речи.
+    """
+    probe = subprocess.check_output(
+        [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(audio_path)
+        ],
+        text=True
+    )
+
+    duration = float(probe.strip())
+    sentences = re.split(r"(?<=[.!?])\s+", clean_text(text, 2000))
+    sentences = [s.strip() for s in sentences if s.strip()]
+
+    if not sentences:
+        return
+
+    weights = [max(1, len(re.findall(r"\w+", s))) for s in sentences]
+    total = sum(weights)
+    current = 0.0
+
+    def timestamp(seconds):
+        ms = int(seconds * 1000)
+        hours = ms // 3600000
+        minutes = (ms % 3600000) // 60000
+        seconds_part = (ms % 60000) // 1000
+        millis = ms % 1000
+        return f"{hours:02}:{minutes:02}:{seconds_part:02},{millis:03}"
+
+    lines = []
+
+    for index, (sentence, weight) in enumerate(zip(sentences, weights), 1):
+        segment = duration * weight / total
+        end = min(duration, current + segment)
+
+        lines.extend([
+            str(index),
+            f"{timestamp(current)} --> {timestamp(end)}",
+            sentence,
+            ""
+        ])
+
+        current = end
+
+    subtitle_path.write_text("\n".join(lines), encoding="utf-8")
+    print("Субтитры созданы:", subtitle_path)
 
 
 def render(data, audio_path, video_path):
     blender = shutil.which("blender")
+
     if not blender:
-        raise RuntimeError("Blender не найден. Проверь установку в daily.yml.")
+        raise RuntimeError("Blender не найден.")
 
     scene_script = Path(__file__).resolve().parent / "blender_scene.py"
+
     if not scene_script.exists():
         raise RuntimeError(f"Не найден файл: {scene_script}")
 
@@ -420,8 +441,6 @@ def render(data, audio_path, video_path):
     duration = min(float(probe.strip()), MAX_DURATION)
     duration = max(8.0, duration)
 
-    print("Запускаем Blender 5: создание 3D-мультфильма...")
-
     command = [
         blender,
         "-b",
@@ -433,35 +452,77 @@ def render(data, audio_path, video_path):
         "--duration", str(duration)
     ]
 
+    print("Запускаем Blender...")
+
     subprocess.run(command, check=True)
 
     if not silent_video.exists() or silent_video.stat().st_size < 100_000:
         raise RuntimeError("Blender не создал видео.")
 
-    print("Добавляем русскую озвучку...")
+    subtitle_path = OUT / "subtitles.srt"
+    make_subtitles(data["voiceover"], audio_path, subtitle_path)
 
-    subprocess.run(
-        [
-            "ffmpeg", "-y",
-            "-loglevel", "error",
-            "-i", str(silent_video),
-            "-i", str(audio_path),
-            "-map", "0:v:0",
-            "-map", "1:a:0",
-            "-c:v", "libx264",
-            "-preset", "veryfast",
-            "-crf", "23",
-            "-pix_fmt", "yuv420p",
-            "-c:a", "aac",
-            "-b:a", "128k",
-            "-t", str(duration),
-            "-movflags", "+faststart",
-            str(video_path)
-        ],
-        check=True
+    print("Собираем финальное видео...")
+
+    # Вшиваем субтитры в изображение. FFmpeg subtitles-фильтр
+    # использует libass, если он доступен в сборке FFmpeg.
+    subtitle_filter = (
+        "subtitles="
+        + str(subtitle_path).replace("\\", "/").replace(":", r"\:")
+        + ":force_style='FontName=DejaVu Sans,FontSize=18,"
+          "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
+          "BorderStyle=1,Outline=2,Shadow=1,Alignment=2,MarginV=95'"
     )
 
-    print("Видео готово:", video_path)
+    command = [
+        "ffmpeg", "-y",
+        "-loglevel", "error",
+        "-i", str(silent_video),
+        "-i", str(audio_path),
+        "-vf", subtitle_filter,
+        "-map", "0:v:0",
+        "-map", "1:a:0",
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "21",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
+        "-b:a", "160k",
+        "-t", str(duration),
+        "-movflags", "+faststart",
+        str(video_path)
+    ]
+
+    try:
+        subprocess.run(command, check=True)
+    except subprocess.CalledProcessError:
+        print("Не удалось вшить субтитры. Создаём видео без них.")
+
+        subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-loglevel", "error",
+                "-i", str(silent_video),
+                "-i", str(audio_path),
+                "-map", "0:v:0",
+                "-map", "1:a:0",
+                "-c:v", "libx264",
+                "-preset", "veryfast",
+                "-crf", "21",
+                "-pix_fmt", "yuv420p",
+                "-c:a", "aac",
+                "-b:a", "160k",
+                "-t", str(duration),
+                "-movflags", "+faststart",
+                str(video_path)
+            ],
+            check=True
+        )
+
+    if not video_path.exists() or video_path.stat().st_size < 100_000:
+        raise RuntimeError("Финальное видео не создано.")
+
+    print("Готовое видео:", video_path)
 
 
 def upload(video_path, data):
@@ -487,7 +548,7 @@ def upload(video_path, data):
         "snippet": {
             "title": data["title"][:100],
             "description": data["description"],
-            "categoryId": "28",
+            "categoryId": "22",
             "defaultLanguage": "ru"
         },
         "status": {
@@ -496,7 +557,7 @@ def upload(video_path, data):
         }
     }
 
-    req = yt.videos().insert(
+    request = yt.videos().insert(
         part="snippet,status",
         body=body,
         media_body=MediaFileUpload(
@@ -506,14 +567,13 @@ def upload(video_path, data):
         )
     )
 
-    response = req.execute()
+    response = request.execute()
     print("YOUTUBE_VIDEO_ID=" + response["id"])
 
 
 def main():
     print("================================")
     print("AI SHORTS FACTORY")
-    print("Starting video generation...")
     print("================================")
 
     data = make_script()
@@ -526,7 +586,7 @@ def main():
     audio = OUT / "voice.mp3"
     video = OUT / "short.mp4"
 
-    print("Создаём русскую озвучку...")
+    print("Создаём озвучку...")
     make_voice(data["voiceover"], audio, data["category"])
 
     print("Создаём 3D-видео...")
