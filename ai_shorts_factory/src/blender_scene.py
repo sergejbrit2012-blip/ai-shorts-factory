@@ -366,7 +366,14 @@ def setup_scene():
 
     scene = bpy.context.scene
 
+    available_engines = scene.render.bl_rna.properties["engine"].enum_items.keys()
+
+if "BLENDER_EEVEE_NEXT" in available_engines:
     scene.render.engine = "BLENDER_EEVEE_NEXT"
+elif "BLENDER_EEVEE" in available_engines:
+    scene.render.engine = "BLENDER_EEVEE"
+else:
+    scene.render.engine = "CYCLES"
     scene.render.resolution_x = WIDTH
     scene.render.resolution_y = HEIGHT
     scene.render.resolution_percentage = 100
