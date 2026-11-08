@@ -3,12 +3,13 @@ name: AI Shorts Factory
 
 on:
   workflow_dispatch:
-     schedule:
+  schedule:
     - cron: '30 7 * * *'
     - cron: '30 10 * * *'
     - cron: '30 13 * * *'
     - cron: '30 16 * * *'
     - cron: '30 19 * * *'
+
 jobs:
   create-short:
     runs-on: ubuntu-latest
