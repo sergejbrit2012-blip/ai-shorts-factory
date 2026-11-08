@@ -608,30 +608,50 @@ unexpected ending. Make the episode entertaining.
 # VOICE GENERATION
 # =========================================================
 
+
 def make_voice(text, path, category="HOME"):
+    import re
+
     wav = path.with_suffix(".wav")
 
+    # Очищаем текст от ссылок, эмодзи и лишних символов
+    text = str(text or "")
+    text = re.sub(r"https?://\S+", "", text)
+    text = re.sub(r"[*_`#]", "", text)
+    text = re.sub(r"[^\w\s.,!?;:—–()«»\"'-]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    if not text or not re.search(r"[а-яА-ЯёЁ]", text):
+        raise RuntimeError("В сценарии нет нормального русского текста для озвучки")
+
     speeds = {
-        "HOME": "165",
-        "AI": "155",
-        "SERIES": "125"
+        "HOME": "150",
+        "AI": "145",
+        "SERIES": "135"
     }
 
-    speech_speed = speeds.get(category, "155")
+    speech_speed = speeds.get(category, "145")
 
+    # Генерируем русскую речь через стандартный ввод
     subprocess.run(
         [
             "espeak-ng",
             "-v", "ru",
             "-s", speech_speed,
-            "-a", "165",
-            "-g", "8",
+            "-a", "180",
+            "-g", "5",
             "-w", str(wav),
-            text
+            "--stdin"
         ],
+        input=text,
+        text=True,
         check=True
     )
 
+    if not wav.exists() or wav.stat().st_size < 1000:
+        raise RuntimeError("Не удалось создать аудиофайл")
+
+    # Проверяем длительность
     probe = subprocess.check_output(
         [
             "ffprobe", "-v", "error",
@@ -643,39 +663,43 @@ def make_voice(text, path, category="HOME"):
     )
 
     duration = float(probe.strip())
+
+    if duration <= 0:
+        raise RuntimeError("Неверная длительность аудио")
+
     speed_factor = max(1.0, duration / MAX_DURATION)
 
-    command = [
-        "ffmpeg", "-y",
-        "-i", str(wav),
-        "-vn"
-    ]
+    # Создаём цепочку ускорения, если она необходима
+    filters = []
+
+    while speed_factor > 2.0:
+        filters.append("atempo=2.0")
+        speed_factor /= 2.0
 
     if speed_factor > 1.0:
-        command += [
-            "-filter:a",
-            f"atempo={speed_factor:.4f}"
-        ]
+        filters.append(f"atempo={speed_factor:.4f}")
 
-    command += [
-        "-codec:a", "libmp3lame",
-        "-b:a", "128k",
-        str(path)
-    ]
+    filters.append("loudnorm=I=-16:TP=-1.5:LRA=11")
 
     subprocess.run(
-        command,
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL
+        [
+            "ffmpeg", "-y",
+            "-loglevel", "error",
+            "-i", str(wav),
+            "-af", ",".join(filters),
+            "-ar", "44100",
+            "-ac", "2",
+            "-codec:a", "libmp3lame",
+            "-b:a", "128k",
+            str(path)
+        ],
+        check=True
     )
 
     wav.unlink(missing_ok=True)
 
+    print("Русская озвучка успешно создана:", path)
 
-# =========================================================
-# VIDEO RENDERING
-# =========================================================
 
 def render(data, audio_path, video_path):
     slides = []
