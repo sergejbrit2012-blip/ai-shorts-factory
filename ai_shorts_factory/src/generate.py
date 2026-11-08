@@ -609,12 +609,22 @@ unexpected ending. Make the episode entertaining.
 # =========================================================
 
 
+
 def make_voice(text, path, category="HOME"):
     import re
 
     wav = path.with_suffix(".wav")
 
-    # Очищаем текст от ссылок, эмодзи и лишних символов
+    # Скорость русской речи
+    speeds = {
+        "HOME": "120",
+        "AI": "115",
+        "SERIES": "110"
+    }
+
+    speech_speed = speeds.get(category, "115")
+
+    # Очистка текста
     text = str(text or "")
     text = re.sub(r"https?://\S+", "", text)
     text = re.sub(r"[*_`#]", "", text)
@@ -622,17 +632,9 @@ def make_voice(text, path, category="HOME"):
     text = re.sub(r"\s+", " ", text).strip()
 
     if not text or not re.search(r"[а-яА-ЯёЁ]", text):
-        raise RuntimeError("В сценарии нет нормального русского текста для озвучки")
+        raise RuntimeError("Нет нормального русского текста для озвучки")
 
-    speeds = {
-        "HOME": "150",
-        "AI": "145",
-        "SERIES": "135"
-    }
-
-    speech_speed = speeds.get(category, "145")
-
-    # Генерируем русскую речь через стандартный ввод
+    # Создание русской речи
     subprocess.run(
         [
             "espeak-ng",
@@ -649,9 +651,9 @@ def make_voice(text, path, category="HOME"):
     )
 
     if not wav.exists() or wav.stat().st_size < 1000:
-        raise RuntimeError("Не удалось создать аудиофайл")
+        raise RuntimeError("Не удалось создать аудио")
 
-    # Проверяем длительность
+    # Проверка длительности
     probe = subprocess.check_output(
         [
             "ffprobe", "-v", "error",
@@ -667,9 +669,10 @@ def make_voice(text, path, category="HOME"):
     if duration <= 0:
         raise RuntimeError("Неверная длительность аудио")
 
-    speed_factor = max(1.0, duration / MAX_DURATION)
+    # Не ускоряем обычную речь.
+    # Ускорение применяется только для очень длинных сценариев.
+    speed_factor = max(1.0, duration / (MAX_DURATION * 1.5))
 
-    # Создаём цепочку ускорения, если она необходима
     filters = []
 
     while speed_factor > 2.0:
@@ -681,6 +684,7 @@ def make_voice(text, path, category="HOME"):
 
     filters.append("loudnorm=I=-16:TP=-1.5:LRA=11")
 
+    # Создание итогового MP3
     subprocess.run(
         [
             "ffmpeg", "-y",
