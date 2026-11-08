@@ -9,7 +9,8 @@ from pathlib import Path
 from mathutils import Vector
 
 # =====================================================
-# AI SHORTS FACTORY - BLENDER 5.0.1
+# AI SHORTS FACTORY - FAST 3D
+# BLENDER 5.0.1
 # =====================================================
 
 def get_args():
@@ -44,9 +45,10 @@ DATA_PATH = Path(ARGS["data"]).resolve()
 OUTPUT_PATH = Path(ARGS["output"]).resolve()
 DURATION = max(5, float(ARGS["duration"]))
 
-FPS = 20
-WIDTH = 540
-HEIGHT = 960
+# Быстрые настройки
+FPS = 12
+WIDTH = 480
+HEIGHT = 854
 
 FRAME_DIR = OUTPUT_PATH.parent / "blender_frames"
 
@@ -60,7 +62,7 @@ def load_data():
         with open(DATA_PATH, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
-        print("Не удалось прочитать сценарий:", e)
+        print("Ошибка чтения сценария:", e)
         return {}
 
 
@@ -73,15 +75,7 @@ DATA = load_data()
 
 def make_material(name, color):
     mat = bpy.data.materials.new(name)
-    mat.diffuse_color = (*color, 1)
-
-    nodes = mat.node_tree.nodes if mat.node_tree else None
-    if nodes:
-        bsdf = nodes.get("Principled BSDF")
-        if bsdf:
-            bsdf.inputs["Base Color"].default_value = (*color, 1)
-            bsdf.inputs["Roughness"].default_value = 0.4
-
+    mat.diffuse_color = (*color, 1.0)
     return mat
 
 
@@ -95,13 +89,13 @@ FLOOR = make_material("Пол", (0.025, 0.04, 0.1))
 
 
 # =====================================================
-# СОЗДАНИЕ ФИГУР
+# БЫСТРОЕ СОЗДАНИЕ ФИГУР
 # =====================================================
 
 def sphere(name, location, scale, material):
     bpy.ops.mesh.primitive_uv_sphere_add(
-        segments=24,
-        ring_count=16,
+        segments=16,
+        ring_count=12,
         location=location
     )
 
@@ -116,7 +110,7 @@ def sphere(name, location, scale, material):
 
 def cylinder(name, location, radius, depth, material):
     bpy.ops.mesh.primitive_cylinder_add(
-        vertices=24,
+        vertices=12,
         radius=radius,
         depth=depth,
         location=location
@@ -127,15 +121,15 @@ def cylinder(name, location, radius, depth, material):
     obj.data.materials.append(material)
 
     bevel = obj.modifiers.new("Скругление", "BEVEL")
-    bevel.width = 0.08
-    bevel.segments = 3
+    bevel.width = 0.04
+    bevel.segments = 1
 
     return obj
 
 
 def cone(name, location, radius, depth, material):
     bpy.ops.mesh.primitive_cone_add(
-        vertices=24,
+        vertices=12,
         radius1=radius,
         radius2=0.04,
         depth=depth,
@@ -228,7 +222,7 @@ def create_character(name, x, material, kind):
         )
         parts.append(foot)
 
-    # Верхушки персонажей
+    # Верхушки
     if kind == 0:
         top = sphere(
             name + "_Лист",
@@ -257,7 +251,7 @@ def create_character(name, x, material, kind):
         )
         parts.append(top)
 
-    # Родительский объект персонажа
+    # Контроллер персонажа
     bpy.ops.object.empty_add(
         type="PLAIN_AXES",
         location=(x, 0, 0)
@@ -282,6 +276,7 @@ def animate_character(obj, end_frame, phase=0):
     start = 1
     middle = max(2, end_frame // 2)
 
+    # Прыжки
     obj.location.z = 0
     obj.keyframe_insert(data_path="location", frame=start)
 
@@ -291,6 +286,7 @@ def animate_character(obj, end_frame, phase=0):
     obj.location.z = 0
     obj.keyframe_insert(data_path="location", frame=end_frame)
 
+    # Наклоны
     obj.rotation_euler[1] = -0.1
     obj.keyframe_insert(data_path="rotation_euler", frame=start)
 
@@ -300,6 +296,7 @@ def animate_character(obj, end_frame, phase=0):
     obj.rotation_euler[1] = -0.1
     obj.keyframe_insert(data_path="rotation_euler", frame=end_frame)
 
+    # Плавная анимация
     if obj.animation_data and obj.animation_data.action:
         try:
             for curve in obj.animation_data.action.fcurves:
@@ -310,7 +307,7 @@ def animate_character(obj, end_frame, phase=0):
 
 
 # =====================================================
-# ТЕКСТ
+# ЗАГОЛОВОК
 # =====================================================
 
 def add_title():
@@ -321,7 +318,7 @@ def add_title():
     font.body = title
     font.size = 0.35
     font.align_x = "CENTER"
-    font.extrude = 0.01
+    font.extrude = 0.005
 
     obj = bpy.data.objects.new("Заголовок", font)
     bpy.context.collection.objects.link(obj)
@@ -341,36 +338,33 @@ def setup_scene():
 
     scene = bpy.context.scene
 
-    # Выбираем реально доступный движок
-    engines = scene.render.bl_rna.properties["engine"].enum_items.keys()
-
-    if "BLENDER_EEVEE_NEXT" in engines:
-        scene.render.engine = "BLENDER_EEVEE_NEXT"
-    elif "BLENDER_EEVEE" in engines:
-        scene.render.engine = "BLENDER_EEVEE"
-    else:
-        scene.render.engine = "CYCLES"
+    # Workbench — быстрый 3D-рендеринг
+    scene.render.engine = "BLENDER_WORKBENCH"
 
     scene.render.resolution_x = WIDTH
     scene.render.resolution_y = HEIGHT
     scene.render.resolution_percentage = 100
+
     scene.render.fps = FPS
     scene.frame_start = 1
     scene.frame_end = max(1, int(DURATION * FPS))
 
     scene.render.image_settings.file_format = "PNG"
-    scene.render.image_settings.color_mode = "RGBA"
+    scene.render.image_settings.color_mode = "RGB"
+    scene.render.image_settings.color_depth = "8"
 
-    scene.view_settings.view_transform = "Standard"
+    # Настройки Workbench
+    shading = scene.display.shading
+    shading.light = "STUDIO"
+    shading.color_type = "MATERIAL"
+    shading.show_shadows = False
+    shading.show_cavity = False
+    shading.show_specular_highlight = False
+    shading.show_object_outline = False
 
     # Фон
-    world = scene.world
-    world.use_nodes = True
-
-    bg = world.node_tree.nodes.get("Background")
-    if bg:
-        bg.inputs["Color"].default_value = (0.015, 0.025, 0.08, 1)
-        bg.inputs["Strength"].default_value = 0.7
+    scene.world.color = (0.015, 0.025, 0.08)
+    shading.background_type = "WORLD"
 
     # Пол
     bpy.ops.mesh.primitive_plane_add(
@@ -385,30 +379,11 @@ def setup_scene():
 
     direction = Vector((0, 0, 2.0)) - camera.location
     camera.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
+
     camera.data.type = "ORTHO"
     camera.data.ortho_scale = 8.5
 
     scene.camera = camera
-
-    # Основной свет
-    bpy.ops.object.light_add(
-        type="AREA",
-        location=(0, -5, 8)
-    )
-    light = bpy.context.object
-    light.data.energy = 1300
-    light.data.shape = "DISK"
-    light.data.size = 7
-
-    # Дополнительный свет
-    bpy.ops.object.light_add(
-        type="AREA",
-        location=(5, 2, 5)
-    )
-    light2 = bpy.context.object
-    light2.data.energy = 700
-    light2.data.color = (0.3, 0.5, 1.0)
-    light2.data.size = 5
 
     # Персонажи
     characters = [
@@ -422,24 +397,36 @@ def setup_scene():
     for index, character in enumerate(characters):
         animate_character(character, scene.frame_end, index)
 
+    # Убираем ненужные эффекты
+    scene.render.use_compositing = False
+    scene.render.use_sequencer = False
+
     return scene
 
 
 # =====================================================
-# РЕНДЕР И СБОРКА MP4
+# РЕНДЕРИНГ И СБОРКА MP4
 # =====================================================
 
 def render_video(scene):
     FRAME_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
+    # Удаляем старые кадры
     for old in FRAME_DIR.glob("frame_*.png"):
         old.unlink()
 
     scene.render.image_settings.file_format = "PNG"
     scene.render.filepath = str(FRAME_DIR / "frame_")
 
-    print("Начинаем рендеринг...")
+    print("================================")
+    print("НАЧАЛО БЫСТРОГО 3D-РЕНДЕРИНГА")
+    print("Длительность:", DURATION)
+    print("FPS:", FPS)
+    print("Разрешение:", WIDTH, "x", HEIGHT)
+    print("Всего кадров:", scene.frame_end)
+    print("================================", flush=True)
+
     bpy.ops.render.render(animation=True)
 
     frames = list(FRAME_DIR.glob("frame_*.png"))
@@ -447,9 +434,10 @@ def render_video(scene):
     if not frames:
         raise RuntimeError("Blender не создал кадры PNG.")
 
-    print("Создано кадров:", len(frames))
+    print("Создано кадров:", len(frames), flush=True)
 
     ffmpeg = shutil.which("ffmpeg")
+
     if not ffmpeg:
         raise RuntimeError("FFmpeg не найден.")
 
@@ -466,13 +454,13 @@ def render_video(scene):
         str(OUTPUT_PATH)
     ]
 
-    print("Собираем MP4...")
+    print("Собираем MP4...", flush=True)
     subprocess.run(command, check=True)
 
     if not OUTPUT_PATH.exists() or OUTPUT_PATH.stat().st_size == 0:
         raise RuntimeError("Не удалось создать MP4.")
 
-    print("Готовое видео:", OUTPUT_PATH)
+    print("Готовое видео:", OUTPUT_PATH, flush=True)
 
 
 # =====================================================
@@ -482,13 +470,14 @@ def render_video(scene):
 def main():
     print("================================")
     print("AI SHORTS FACTORY")
-    print("BLENDER 3D RENDER")
-    print("================================")
+    print("FAST 3D ANIMATION")
+    print("BLENDER 5.0.1")
+    print("================================", flush=True)
 
     scene = setup_scene()
     render_video(scene)
 
-    print("3D-ВИДЕО УСПЕШНО СОЗДАНО!")
+    print("3D-ВИДЕО УСПЕШНО СОЗДАНО!", flush=True)
 
 
 if __name__ == "__main__":
