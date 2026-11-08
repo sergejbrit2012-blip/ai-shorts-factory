@@ -5,11 +5,12 @@ import os
 import json
 import math
 import argparse
+import subprocess
 from mathutils import Vector
 
 # ============================================================
 # AI SHORTS FACTORY — PROCEDURAL 3D CARTOON
-# Blender 5.x
+# Blender 5.x compatible
 # ============================================================
 
 def arguments():
@@ -29,6 +30,9 @@ FPS = 24
 WIDTH = 720
 HEIGHT = 1280
 
+OUTPUT_DIR = os.path.dirname(os.path.abspath(ARGS.output))
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
 # ============================================================
 # RESET
 # ============================================================
@@ -36,7 +40,7 @@ HEIGHT = 1280
 bpy.ops.object.select_all(action="SELECT")
 bpy.ops.object.delete(use_global=False)
 
-for block in bpy.data.materials:
+for block in list(bpy.data.materials):
     bpy.data.materials.remove(block)
 
 # ============================================================
@@ -44,9 +48,7 @@ for block in bpy.data.materials:
 # ============================================================
 
 scene = bpy.context.scene
-scene.render.engine = "BLENDER_EEVEE_NEXT" if hasattr(
-    bpy.types, "BLENDER_EEVEE_NEXT"
-) else "BLENDER_EEVEE"
+scene.render.engine = "BLENDER_EEVEE_NEXT"
 
 scene.render.resolution_x = WIDTH
 scene.render.resolution_y = HEIGHT
@@ -57,23 +59,16 @@ scene.frame_end = int(DURATION * FPS)
 
 scene.render.image_settings.file_format = "PNG"
 scene.render.image_settings.color_mode = "RGBA"
+scene.render.image_settings.compression = 25
 scene.render.film_transparent = False
 
-scene.render.resolution_percentage = 100
-scene.render.image_settings.compression = 25
-
-scene.render.filepath = os.path.join(
-    os.path.dirname(ARGS.output), "frame_"
-)
-
+scene.render.filepath = os.path.join(OUTPUT_DIR, "frame_")
 scene.render.use_file_extension = True
 
-# Eevee quality
-if hasattr(scene, "eevee"):
-    try:
-        scene.eevee.taa_render_samples = 32
-    except Exception:
-        pass
+try:
+    scene.eevee.taa_render_samples = 32
+except Exception:
+    pass
 
 try:
     scene.view_settings.view_transform = "AgX"
@@ -89,8 +84,14 @@ with open(ARGS.data, "r", encoding="utf-8") as f:
 
 TITLE = DATA.get("title", "Полезный совет")
 HERO = DATA.get("hero", {})
-HERO_ID = HERO.get("id", "banana")
-HERO_NAME = HERO.get("name", "Банан")
+
+if isinstance(HERO, str):
+    HERO_ID = HERO
+    HERO_NAME = HERO
+else:
+    HERO_ID = HERO.get("id", "banana")
+    HERO_NAME = HERO.get("name", "Банан")
+
 SCENES = DATA.get("scenes", [])
 
 # ============================================================
@@ -100,6 +101,7 @@ SCENES = DATA.get("scenes", [])
 def material(name, color, roughness=0.55, metallic=0.0):
     mat = bpy.data.materials.new(name)
     mat.diffuse_color = (*color, 1)
+
     mat.use_nodes = True
     bsdf = mat.node_tree.nodes.get("Principled BSDF")
 
@@ -182,7 +184,6 @@ def cube(name, location, scale, mat, bevel=0.08):
         modifier = obj.modifiers.new("Soft Edges", "BEVEL")
         modifier.width = bevel
         modifier.segments = 3
-
         obj.modifiers.new("Weighted Normals", "WEIGHTED_NORMAL")
 
     apply_material(obj, mat)
@@ -234,6 +235,7 @@ def parent_to(obj, parent):
 
 def area_light(name, location, energy, size, target):
     bpy.ops.object.light_add(type="AREA", location=location)
+
     light = bpy.context.object
     light.name = name
     light.data.energy = energy
@@ -245,29 +247,9 @@ def area_light(name, location, energy, size, target):
 
 
 def setup_lighting():
-    area_light(
-        "Large Softbox",
-        (1, -6, 9),
-        1200,
-        7,
-        (0, 0, 2)
-    )
-
-    area_light(
-        "Front Fill",
-        (-5, -4, 4),
-        700,
-        5,
-        (0, 0, 2)
-    )
-
-    area_light(
-        "Rim Light",
-        (2, 4, 6),
-        1500,
-        4,
-        (0, 0, 2)
-    )
+    area_light("Large Softbox", (1, -6, 9), 1200, 7, (0, 0, 2))
+    area_light("Front Fill", (-5, -4, 4), 700, 5, (0, 0, 2))
+    area_light("Rim Light", (2, 4, 6), 1500, 4, (0, 0, 2))
 
 
 # ============================================================
@@ -275,33 +257,13 @@ def setup_lighting():
 # ============================================================
 
 def create_kitchen():
-    cube(
-        "Floor",
-        (0, 0, -0.25),
-        (12, 12, 0.5),
-        MAT["wood"]
-    )
+    cube("Floor", (0, 0, -0.25), (12, 12, 0.5), MAT["wood"])
 
-    cube(
-        "Back Wall",
-        (0, 3.0, 4),
-        (12, 0.3, 8),
-        MAT["wall"]
-    )
+    cube("Back Wall", (0, 3.0, 4), (12, 0.3, 8), MAT["wall"])
 
-    cube(
-        "Kitchen Counter",
-        (0, 0.6, 1.1),
-        (9, 1.4, 0.25),
-        MAT["white"]
-    )
+    cube("Kitchen Counter", (0, 0.6, 1.1), (9, 1.4, 0.25), MAT["white"])
 
-    cube(
-        "Cabinet",
-        (0, 1.25, 0.45),
-        (8, 0.9, 0.9),
-        MAT["blue"]
-    )
+    cube("Cabinet", (0, 1.25, 0.45), (8, 0.9, 0.9), MAT["blue"])
 
     for x in [-3, -1.5, 0, 1.5, 3]:
         cube(
@@ -312,58 +274,16 @@ def create_kitchen():
             0.04
         )
 
-    # Kitchen window
-    cube(
-        "Window Frame",
-        (-3.5, 2.78, 4.6),
-        (2.5, 0.12, 2.2),
-        MAT["white"]
-    )
+    cube("Window Frame", (-3.5, 2.78, 4.6), (2.5, 0.12, 2.2), MAT["white"])
+    cube("Window Glass", (-3.5, 2.70, 4.6), (2.25, 0.05, 1.95), MAT["blue"], 0.01)
 
-    cube(
-        "Window Glass",
-        (-3.5, 2.70, 4.6),
-        (2.25, 0.05, 1.95),
-        MAT["blue"],
-        0.01
-    )
+    cube("Window Divider", (-3.5, 2.62, 4.6), (0.07, 0.05, 2.0), MAT["white"], 0.01)
+    cube("Window Divider", (-3.5, 2.62, 4.6), (2.3, 0.05, 0.07), MAT["white"], 0.01)
 
-    cube(
-        "Window Divider",
-        (-3.5, 2.62, 4.6),
-        (0.07, 0.05, 2.0),
-        MAT["white"],
-        0.01
-    )
+    cube("Shelf", (3.1, 2.5, 4.2), (2.2, 0.55, 0.12), MAT["wood"])
 
-    cube(
-        "Window Divider",
-        (-3.5, 2.62, 4.6),
-        (2.3, 0.05, 0.07),
-        MAT["white"],
-        0.01
-    )
-
-    # Decorative shelves
-    cube(
-        "Shelf",
-        (3.1, 2.5, 4.2),
-        (2.2, 0.55, 0.12),
-        MAT["wood"]
-    )
-
-    for x, color in [
-        (2.4, "red"),
-        (3.1, "green"),
-        (3.8, "yellow")
-    ]:
-        cylinder(
-            "Kitchen Jar",
-            (x, 2.4, 4.55),
-            0.18,
-            0.55,
-            MAT[color]
-        )
+    for x, color in [(2.4, "red"), (3.1, "green"), (3.8, "yellow")]:
+        cylinder("Kitchen Jar", (x, 2.4, 4.55), 0.18, 0.55, MAT[color])
 
 
 # ============================================================
@@ -375,39 +295,18 @@ def create_body():
     bpy.context.collection.objects.link(root)
 
     if HERO_ID == "banana":
-        body = uv_sphere(
-            "Banana Body",
-            (0, 0, 2.4),
-            (0.65, 0.48, 1.45),
-            MAT["yellow"]
-        )
+        body = uv_sphere("Banana Body", (0, 0, 2.4), (0.65, 0.48, 1.45), MAT["yellow"])
         body.rotation_euler[1] = math.radians(-12)
 
-        tip1 = uv_sphere(
-            "Banana Tip",
-            (0.16, 0, 3.78),
-            (0.15, 0.16, 0.23),
-            MAT["brown"]
-        )
-
-        tip2 = uv_sphere(
-            "Banana Stem",
-            (-0.12, 0, 0.99),
-            (0.14, 0.14, 0.20),
-            MAT["brown"]
-        )
+        tip1 = uv_sphere("Banana Tip", (0.16, 0, 3.78), (0.15, 0.16, 0.23), MAT["brown"])
+        tip2 = uv_sphere("Banana Stem", (-0.12, 0, 0.99), (0.14, 0.14, 0.20), MAT["brown"])
 
         parent_to(body, root)
         parent_to(tip1, root)
         parent_to(tip2, root)
 
     elif HERO_ID == "watermelon":
-        body = uv_sphere(
-            "Watermelon Body",
-            (0, 0, 2.3),
-            (0.95, 0.75, 1.0),
-            MAT["green"]
-        )
+        body = uv_sphere("Watermelon Body", (0, 0, 2.3), (0.95, 0.75, 1.0), MAT["green"])
 
         for x in [-0.65, -0.3, 0, 0.3, 0.65]:
             stripe = uv_sphere(
@@ -421,93 +320,46 @@ def create_body():
         parent_to(body, root)
 
     elif HERO_ID == "strawberry":
-        body = uv_sphere(
-            "Strawberry Body",
-            (0, 0, 2.35),
-            (0.78, 0.62, 1.0),
-            MAT["red"]
-        )
-
+        body = uv_sphere("Strawberry Body", (0, 0, 2.35), (0.78, 0.62, 1.0), MAT["red"])
         body.scale.z = 1.3
 
         for x in [-0.4, 0, 0.4]:
-            leaf = uv_sphere(
-                "Strawberry Leaf",
-                (x, 0, 3.42),
-                (0.35, 0.12, 0.13),
-                MAT["green_light"]
-            )
+            leaf = uv_sphere("Strawberry Leaf", (x, 0, 3.42), (0.35, 0.12, 0.13), MAT["green_light"])
             parent_to(leaf, root)
 
         parent_to(body, root)
 
     elif HERO_ID == "carrot":
-        body = uv_sphere(
-            "Carrot Body",
-            (0, 0, 2.3),
-            (0.62, 0.56, 1.15),
-            MAT["orange"]
-        )
+        body = uv_sphere("Carrot Body", (0, 0, 2.3), (0.62, 0.56, 1.15), MAT["orange"])
         body.scale.x = 0.82
         body.scale.z = 1.25
         parent_to(body, root)
 
         for x in [-0.3, 0, 0.3]:
-            leaf = uv_sphere(
-                "Carrot Leaf",
-                (x, 0, 3.65),
-                (0.14, 0.12, 0.65),
-                MAT["green"]
-            )
+            leaf = uv_sphere("Carrot Leaf", (x, 0, 3.65), (0.14, 0.12, 0.65), MAT["green"])
             leaf.rotation_euler[1] = math.radians(x * 60)
             parent_to(leaf, root)
 
     elif HERO_ID == "cucumber":
-        body = uv_sphere(
-            "Cucumber Body",
-            (0, 0, 2.35),
-            (0.55, 0.55, 1.3),
-            MAT["green"]
-        )
+        body = uv_sphere("Cucumber Body", (0, 0, 2.35), (0.55, 0.55, 1.3), MAT["green"])
         parent_to(body, root)
 
         for x in [-0.35, 0, 0.35]:
             for z in [1.8, 2.2, 2.6, 3.0]:
-                dot = uv_sphere(
-                    "Cucumber Texture",
-                    (x, -0.52, z),
-                    (0.045, 0.035, 0.045),
-                    MAT["green_light"]
-                )
+                dot = uv_sphere("Cucumber Texture", (x, -0.52, z), (0.045, 0.035, 0.045), MAT["green_light"])
                 parent_to(dot, root)
 
     elif HERO_ID == "apple":
-        body = uv_sphere(
-            "Apple Body",
-            (0, 0, 2.3),
-            (0.82, 0.72, 0.95),
-            MAT["red"]
-        )
+        body = uv_sphere("Apple Body", (0, 0, 2.3), (0.82, 0.72, 0.95), MAT["red"])
         parent_to(body, root)
 
-        stem = cylinder(
-            "Apple Stem",
-            (0, 0, 3.28),
-            0.06,
-            0.4,
-            MAT["brown"]
-        )
+        stem = cylinder("Apple Stem", (0, 0, 3.28), 0.06, 0.4, MAT["brown"])
         parent_to(stem, root)
 
-        leaf = uv_sphere(
-            "Apple Leaf",
-            (0.24, 0, 3.38),
-            (0.35, 0.12, 0.12),
-            MAT["green"]
-        )
+        leaf = uv_sphere("Apple Leaf", (0.24, 0, 3.38), (0.35, 0.12, 0.12), MAT["green"])
         parent_to(leaf, root)
 
-    elif HERO_ID == "orange" or HERO_ID == "lemon":
+    elif HERO_ID in ("orange", "lemon"):
         body = uv_sphere(
             "Citrus Body",
             (0, 0, 2.35),
@@ -516,21 +368,11 @@ def create_body():
         )
         parent_to(body, root)
 
-        leaf = uv_sphere(
-            "Citrus Leaf",
-            (0.25, 0, 3.2),
-            (0.35, 0.12, 0.13),
-            MAT["green"]
-        )
+        leaf = uv_sphere("Citrus Leaf", (0.25, 0, 3.2), (0.35, 0.12, 0.13), MAT["green"])
         parent_to(leaf, root)
 
     else:
-        body = uv_sphere(
-            "Generic Fruit Body",
-            (0, 0, 2.3),
-            (0.8, 0.7, 1.0),
-            MAT["yellow"]
-        )
+        body = uv_sphere("Generic Fruit Body", (0, 0, 2.3), (0.8, 0.7, 1.0), MAT["yellow"])
         parent_to(body, root)
 
     return root
@@ -544,57 +386,24 @@ def create_face(root):
     eye_positions = [-0.25, 0.25]
 
     for x in eye_positions:
-        eye = uv_sphere(
-            "Eye White",
-            (x, -0.44, 2.78),
-            (0.18, 0.10, 0.23),
-            MAT["white"]
-        )
+        eye = uv_sphere("Eye White", (x, -0.44, 2.78), (0.18, 0.10, 0.23), MAT["white"])
         parent_to(eye, root)
 
-        pupil = uv_sphere(
-            "Eye Pupil",
-            (x, -0.535, 2.76),
-            (0.085, 0.055, 0.13),
-            MAT["black"]
-        )
+        pupil = uv_sphere("Eye Pupil", (x, -0.535, 2.76), (0.085, 0.055, 0.13), MAT["black"])
         parent_to(pupil, root)
 
-        shine = uv_sphere(
-            "Eye Shine",
-            (x - 0.025, -0.585, 2.82),
-            (0.035, 0.025, 0.045),
-            MAT["white"]
-        )
+        shine = uv_sphere("Eye Shine", (x - 0.025, -0.585, 2.82), (0.035, 0.025, 0.045), MAT["white"])
         parent_to(shine, root)
 
-    # Eyebrows
     for x in eye_positions:
-        brow = uv_sphere(
-            "Eyebrow",
-            (x, -0.47, 3.08),
-            (0.19, 0.055, 0.055),
-            MAT["brown"]
-        )
+        brow = uv_sphere("Eyebrow", (x, -0.47, 3.08), (0.19, 0.055, 0.055), MAT["brown"])
         parent_to(brow, root)
 
-    # Smile
-    smile = uv_sphere(
-        "Smile",
-        (0, -0.49, 2.34),
-        (0.19, 0.06, 0.065),
-        MAT["black"]
-    )
+    smile = uv_sphere("Smile", (0, -0.49, 2.34), (0.19, 0.06, 0.065), MAT["black"])
     parent_to(smile, root)
 
-    # Cheeks
     for x in [-0.48, 0.48]:
-        cheek = uv_sphere(
-            "Cheek",
-            (x, -0.43, 2.45),
-            (0.12, 0.045, 0.075),
-            MAT["pink"]
-        )
+        cheek = uv_sphere("Cheek", (x, -0.43, 2.45), (0.12, 0.045, 0.075), MAT["pink"])
         parent_to(cheek, root)
 
 
@@ -603,20 +412,10 @@ def create_face(root):
 # ============================================================
 
 def create_clothes(root):
-    shirt = uv_sphere(
-        "Cartoon Shirt",
-        (0, 0, 1.65),
-        (0.57, 0.5, 0.36),
-        MAT["blue"]
-    )
+    shirt = uv_sphere("Cartoon Shirt", (0, 0, 1.65), (0.57, 0.5, 0.36), MAT["blue"])
     parent_to(shirt, root)
 
-    badge = uv_sphere(
-        "Shirt Badge",
-        (0.22, -0.49, 1.72),
-        (0.11, 0.04, 0.11),
-        MAT["yellow_light"]
-    )
+    badge = uv_sphere("Shirt Badge", (0.22, -0.49, 1.72), (0.11, 0.04, 0.11), MAT["yellow_light"])
     parent_to(badge, root)
 
 
@@ -663,28 +462,13 @@ def create_arm(root, side):
 
 def create_legs(root):
     for side in [-1, 1]:
-        leg = uv_sphere(
-            "Leg",
-            (side * 0.3, 0, 0.76),
-            (0.13, 0.15, 0.48),
-            MAT["blue"]
-        )
+        leg = uv_sphere("Leg", (side * 0.3, 0, 0.76), (0.13, 0.15, 0.48), MAT["blue"])
         parent_to(leg, root)
 
-        shoe = uv_sphere(
-            "Cartoon Shoe",
-            (side * 0.3, -0.08, 0.3),
-            (0.27, 0.38, 0.17),
-            MAT["black"]
-        )
+        shoe = uv_sphere("Cartoon Shoe", (side * 0.3, -0.08, 0.3), (0.27, 0.38, 0.17), MAT["black"])
         parent_to(shoe, root)
 
-        sole = uv_sphere(
-            "Shoe Sole",
-            (side * 0.3, -0.09, 0.19),
-            (0.28, 0.38, 0.06),
-            MAT["white"]
-        )
+        sole = uv_sphere("Shoe Sole", (side * 0.3, -0.09, 0.19), (0.28, 0.38, 0.06), MAT["white"])
         parent_to(sole, root)
 
 
@@ -693,26 +477,14 @@ def create_legs(root):
 # ============================================================
 
 def create_props():
-    # Cutting board
-    board = cube(
-        "Cutting Board",
-        (0, -0.3, 1.34),
-        (2.4, 1.0, 0.08),
-        MAT["wood"]
-    )
+    cube("Cutting Board", (0, -0.3, 1.34), (2.4, 1.0, 0.08), MAT["wood"])
 
-    # Decorative food props
     for x, mat in [
         (-2.7, MAT["red"]),
         (-2.0, MAT["green"]),
         (2.5, MAT["yellow"])
     ]:
-        uv_sphere(
-            "Food Prop",
-            (x, 0.2, 1.65),
-            (0.3, 0.3, 0.3),
-            mat
-        )
+        uv_sphere("Food Prop", (x, 0.2, 1.65), (0.3, 0.3, 0.3), mat)
 
 
 # ============================================================
@@ -730,16 +502,14 @@ def setup_camera():
     camera.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
 
     camera.data.lens = 45
-    camera.data.dof.use_dof = True
-    camera.data.dof.focus_object = None
-    camera.data.dof.aperture_fstop = 5.6
+    camera.data.dof.use_dof = False
 
     scene.camera = camera
     return camera
 
 
 # ============================================================
-# ANIMATION
+# ANIMATION — BLENDER 5 COMPATIBLE
 # ============================================================
 
 def animate_character(root):
@@ -747,30 +517,14 @@ def animate_character(root):
         time = frame / FPS
 
         root.location.z = 0.12 * abs(math.sin(time * 4.0))
-        root.rotation_euler.y = math.radians(
-            4.0 * math.sin(time * 2.2)
-        )
+        root.rotation_euler.y = math.radians(4.0 * math.sin(time * 2.2))
 
-        root.keyframe_insert(
-            data_path="location",
-            frame=frame
-        )
+        root.keyframe_insert(data_path="location", frame=frame)
+        root.keyframe_insert(data_path="rotation_euler", frame=frame)
 
-        root.keyframe_insert(
-            data_path="rotation_euler",
-            frame=frame
-        )
+    # Blender 5.x: do not access action.fcurves.
+    # Keyframes use Blender's default smooth interpolation.
 
-    # Smooth animation curves
-    if root.animation_data and root.animation_data.action:
-        for fcurve in root.animation_data.action.fcurves:
-            for key in fcurve.keyframe_points:
-                key.interpolation = "BEZIER"
-
-
-# ============================================================
-# CAMERA MOVEMENT
-# ============================================================
 
 def animate_camera(camera):
     for frame in range(1, scene.frame_end + 1, 12):
@@ -779,15 +533,9 @@ def animate_camera(camera):
         camera.location.x = 4.6 + math.sin(t * 0.5) * 0.25
         camera.location.z = 4.5 + math.sin(t * 0.7) * 0.12
 
-        camera.keyframe_insert(
-            data_path="location",
-            frame=frame
-        )
+        camera.keyframe_insert(data_path="location", frame=frame)
 
-    if camera.animation_data and camera.animation_data.action:
-        for fcurve in camera.animation_data.action.fcurves:
-            for key in fcurve.keyframe_points:
-                key.interpolation = "BEZIER"
+    # Blender 5.x compatible: no direct action.fcurves access.
 
 
 # ============================================================
@@ -834,13 +582,9 @@ def build():
     animate_character(root)
     animate_camera(camera)
 
-    # Render settings
     scene.render.image_settings.file_format = "PNG"
     scene.render.resolution_percentage = 100
-    scene.render.filepath = os.path.join(
-        os.path.dirname(ARGS.output),
-        "frame_"
-    )
+    scene.render.filepath = os.path.join(OUTPUT_DIR, "frame_")
 
     scene.frame_set(1)
 
@@ -850,13 +594,7 @@ def build():
 
     print("Frames rendered.")
 
-    # FFmpeg assembles frames into a video
-    import subprocess
-
-    frame_pattern = os.path.join(
-        os.path.dirname(ARGS.output),
-        "frame_%04d.png"
-    )
+    frame_pattern = os.path.join(OUTPUT_DIR, "frame_%04d.png")
 
     subprocess.run(
         [
@@ -873,6 +611,9 @@ def build():
         ],
         check=True
     )
+
+    if not os.path.exists(ARGS.output) or os.path.getsize(ARGS.output) < 10000:
+        raise RuntimeError("FFmpeg не создал полноценный видеофайл.")
 
     print("Video created:", ARGS.output)
 
