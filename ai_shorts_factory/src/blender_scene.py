@@ -1,4 +1,4 @@
-<CodeBlock language="python" editable>
+
 import bpy
 import sys
 import json
@@ -8,491 +8,546 @@ import subprocess
 from pathlib import Path
 from mathutils import Vector
 
-def arg_value(name, default=None):
-    args = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
-    if name in args:
-        i = args.index(name)
-        if i + 1 < len(args):
-            return args[i + 1]
-    return default
+# ============================================================
+# AI SHORTS FACTORY — BLENDER 5.0.1
+# Простая процедурная 3D-анимация для YouTube Shorts
+# ============================================================
 
-DATA_PATH = Path(arg_value("--data"))
-OUTPUT_PATH = Path(arg_value("--output"))
-DURATION = float(arg_value("--duration", "40"))
+def get_arguments():
+    args = sys.argv
+    if "--" in args:
+        args = args[args.index("--") + 1:]
+    else:
+        args = []
 
-DATA = json.loads(DATA_PATH.read_text(encoding="utf-8"))
+    result = {
+        "data": "data.json",
+        "output": "video_silent.mp4",
+        "duration": 15
+    }
+
+    i = 0
+    while i < len(args):
+        if args[i] == "--data" and i + 1 < len(args):
+            result["data"] = args[i + 1]
+            i += 2
+        elif args[i] == "--output" and i + 1 < len(args):
+            result["output"] = args[i + 1]
+            i += 2
+        elif args[i] == "--duration" and i + 1 < len(args):
+            result["duration"] = float(args[i + 1])
+            i += 2
+        else:
+            i += 1
+
+    return result
+
+
+ARGS = get_arguments()
+DATA_PATH = Path(ARGS["data"]).resolve()
+OUTPUT_PATH = Path(ARGS["output"]).resolve()
+DURATION = max(5, float(ARGS["duration"]))
+
+FPS = 20
+WIDTH = 540
+HEIGHT = 960
 
 FRAME_DIR = OUTPUT_PATH.parent / "blender_frames"
 
-def mat(name, color, roughness=0.55, metallic=0.0):
+
+# ============================================================
+# ЧТЕНИЕ СЦЕНАРИЯ
+# ============================================================
+
+def load_data():
+    if not DATA_PATH.exists():
+        print("Файл сценария не найден:", DATA_PATH)
+        return {}
+
+    try:
+        with open(DATA_PATH, "r", encoding="utf-8") as file:
+            return json.load(file)
+    except Exception as error:
+        print("Ошибка чтения сценария:", error)
+        return {}
+
+
+DATA = load_data()
+
+
+def get_scene_texts():
+    scenes = DATA.get("scenes", [])
+
+    result = []
+
+    if isinstance(scenes, list):
+        for scene in scenes:
+            if isinstance(scene, dict):
+                text = (
+                    scene.get("text")
+                    or scene.get("description")
+                    or scene.get("visual")
+                    or scene.get("action")
+                    or ""
+                )
+                result.append(str(text))
+            else:
+                result.append(str(scene))
+
+    while len(result) < 3:
+        result.append("Весёлые персонажи встречаются и разговаривают")
+
+    return result[:3]
+
+
+SCENE_TEXTS = get_scene_texts()
+
+
+# ============================================================
+# МАТЕРИАЛЫ
+# ============================================================
+
+def create_material(name, color, metallic=0.0, roughness=0.45):
     material = bpy.data.materials.new(name)
     material.diffuse_color = (*color, 1)
+    material.use_nodes = True
 
-if hasattr(material, "use_nodes"):
-        material.use_nodes = True
-
-if material.node_tree:
-        bs = material.node_tree.nodes.get("Principled BSDF")
-        if bs:
-            bs.inputs["Base Color"].default_value = (*color, 1)
-            bs.inputs["Roughness"].default_value = roughness
-            bs.inputs["Metallic"].default_value = metallic
+    bsdf = material.node_tree.nodes.get("Principled BSDF")
+    if bsdf:
+        bsdf.inputs["Base Color"].default_value = (*color, 1)
+        bsdf.inputs["Metallic"].default_value = metallic
+        bsdf.inputs["Roughness"].default_value = roughness
 
     return material
 
-RED = mat("Красная клубника", (0.88, 0.035, 0.07), 0.3)
-YELLOW = mat("Жёлтый банан", (1.0, 0.68, 0.035), 0.32)
-GREEN = mat("Зелёный огурец", (0.08, 0.48, 0.16), 0.4)
-ORANGE = mat("Морковка", (1.0, 0.24, 0.025), 0.4)
-BROWN = mat("Картошка", (0.55, 0.29, 0.12), 0.65)
-WHITE = mat("Белки глаз", (1, 1, 1), 0.25)
-BLACK = mat("Зрачки и рот", (0.012, 0.009, 0.018), 0.25)
-LEAF = mat("Листья", (0.04, 0.32, 0.08), 0.5)
-FLOOR = mat("Пол сцены", (0.12, 0.17, 0.29), 0.65)
-WALL = mat("Фон", (0.035, 0.075, 0.16), 0.8)
-CYAN = mat("Бирюзовый декор", (0.04, 0.62, 0.72), 0.35, 0.15)
 
-def smooth(obj):
-    if obj.type == "MESH":
-        for polygon in obj.data.polygons:
-            polygon.use_smooth = True
-    return obj
+MAT_RED = create_material("Красный", (0.9, 0.035, 0.055))
+MAT_YELLOW = create_material("Жёлтый", (1.0, 0.65, 0.02))
+MAT_GREEN = create_material("Зелёный", (0.08, 0.65, 0.18))
+MAT_ORANGE = create_material("Оранжевый", (1.0, 0.25, 0.015))
+MAT_WHITE = create_material("Белый", (1, 1, 1))
+MAT_BLACK = create_material("Чёрный", (0.008, 0.008, 0.012))
+MAT_BLUE = create_material("Голубой", (0.025, 0.35, 0.9))
+MAT_FLOOR = create_material("Пол", (0.035, 0.055, 0.12))
 
-def uv_sphere(name, loc, scale, material):
+
+# ============================================================
+# ОБЪЕКТЫ
+# ============================================================
+
+def add_uv_sphere(name, location, scale, material):
     bpy.ops.mesh.primitive_uv_sphere_add(
-        segments=24,
-        ring_count=16,
-        location=loc
+        segments=32,
+        ring_count=20,
+        location=location
     )
     obj = bpy.context.object
     obj.name = name
     obj.scale = scale
     obj.data.materials.append(material)
-    return smooth(obj)
 
-def cylinder_between(name, a, b, radius, material):
-    a = Vector(a)
-    b = Vector(b)
-    delta = b - a
+    bpy.ops.object.shade_smooth()
+    return obj
 
-bpy.ops.mesh.primitive_cylinder_add(
-        vertices=12,
+
+def add_cylinder(name, location, radius, depth, material):
+    bpy.ops.mesh.primitive_cylinder_add(
+        vertices=32,
         radius=radius,
-        depth=delta.length,
-        location=(a + b) / 2
+        depth=depth,
+        location=location
     )
-
-obj = bpy.context.object
+    obj = bpy.context.object
     obj.name = name
-    obj.rotation_mode = "QUATERNION"
-    obj.rotation_quaternion = delta.to_track_quat("Z", "Y")
     obj.data.materials.append(material)
 
-bevel = obj.modifiers.new("Мягкие края", "BEVEL")
-    bevel.width = radius * 0.35
-    bevel.segments = 2
+    bevel = obj.modifiers.new("Скругление", "BEVEL")
+    bevel.width = 0.12
+    bevel.segments = 3
 
-    return smooth(obj)
+    obj.modifiers.new("Нормали", "WEIGHTED_NORMAL")
+    return obj
 
-def add_text(body, loc, size, material):
-    curve = bpy.data.curves.new("Текст мультфильма", "FONT")
-    curve.body = str(body)[:95]
+
+def add_cone(name, location, radius, depth, material):
+    bpy.ops.mesh.primitive_cone_add(
+        vertices=32,
+        radius1=radius,
+        radius2=0.05,
+        depth=depth,
+        location=location
+    )
+    obj = bpy.context.object
+    obj.name = name
+    obj.data.materials.append(material)
+    return obj
+
+
+def add_text(body, location, size, material):
+    curve = bpy.data.curves.new("Текст", "FONT")
+    curve.body = str(body)
     curve.size = size
     curve.align_x = "CENTER"
-    curve.extrude = 0.006
+    curve.align_y = "CENTER"
+    curve.extrude = 0.015
 
-obj = bpy.data.objects.new("Надпись", curve)
+    obj = bpy.data.objects.new("Надпись", curve)
     bpy.context.collection.objects.link(obj)
-    obj.location = loc
+    obj.location = location
     obj.data.materials.append(material)
 
     return obj
 
-def set_smooth_animation(obj):
-    if not obj.animation_data or not obj.animation_data.action:
-        return
 
-    action = obj.animation_data.action
-Поддержка разных версий Blender.
-if hasattr(action, "fcurves"):
-for curve in action.fcurves:
-for point in curve.keyframe_points:
-point.interpolation = "SINE"
+# ============================================================
+# ПЕРСОНАЖИ
+# ============================================================
 
-def key_bob(obj, end_frame):
-    points = [
-        (1, 0),
-        (10, 0.13),
-        (20, 0),
-        (30, 0.08),
-        (40, 0)
-    ]
+def create_character(name, x, material, character_type=0):
+    parts = []
 
-for frame, offset in points:
-        frame = min(frame, end_frame)
-        obj.location.z = offset
-        obj.keyframe_insert(data_path="location", frame=frame)
+    body = add_uv_sphere(
+        name + "_Тело",
+        (x, 0, 2.2),
+        (0.72, 0.55, 0.85),
+        material
+    )
+    parts.append(body)
 
-    set_smooth_animation(obj)
+    # Глаза
+    for eye_x in (-0.24, 0.24):
+        eye = add_uv_sphere(
+            name + "_Глаз",
+            (x + eye_x, -0.49, 2.48),
+            (0.16, 0.09, 0.2),
+            MAT_WHITE
+        )
+        parts.append(eye)
 
-def character(kind, x, name, body_material, scale, end_frame):
-    root = bpy.data.objects.new(name + " движение", None)
-    bpy.context.collection.objects.link(root)
-    root.location = (x, 0, 0)
+        pupil = add_uv_sphere(
+            name + "_Зрачок",
+            (x + eye_x, -0.575, 2.46),
+            (0.07, 0.045, 0.1),
+            MAT_BLACK
+        )
+        parts.append(pupil)
 
-def parent(obj):
+    # Улыбка
+    mouth = add_uv_sphere(
+        name + "_Улыбка",
+        (x, -0.54, 2.05),
+        (0.19, 0.055, 0.07),
+        MAT_BLACK
+    )
+    parts.append(mouth)
+
+    # Руки
+    for side in (-1, 1):
+        arm = add_uv_sphere(
+            name + "_Рука",
+            (x + side * 0.83, 0, 2.05),
+            (0.17, 0.17, 0.48),
+            material
+        )
+        arm.rotation_euler[1] = side * -0.45
+        parts.append(arm)
+
+        hand = add_uv_sphere(
+            name + "_Кисть",
+            (x + side * 0.98, -0.02, 1.68),
+            (0.19, 0.19, 0.19),
+            material
+        )
+        parts.append(hand)
+
+    # Ноги
+    for side in (-1, 1):
+        leg = add_cylinder(
+            name + "_Нога",
+            (x + side * 0.3, 0, 1.18),
+            0.13,
+            0.55,
+            MAT_BLUE
+        )
+        parts.append(leg)
+
+        foot = add_uv_sphere(
+            name + "_Ступня",
+            (x + side * 0.3, -0.12, 0.88),
+            (0.24, 0.32, 0.13),
+            MAT_BLACK
+        )
+        parts.append(foot)
+
+    # Верхушка для разных персонажей
+    if character_type == 0:
+        top = add_uv_sphere(
+            name + "_Лист",
+            (x, 0, 3.08),
+            (0.15, 0.12, 0.32),
+            MAT_GREEN
+        )
+        top.rotation_euler[1] = -0.4
+        parts.append(top)
+
+    elif character_type == 1:
+        top = add_cone(
+            name + "_Верхушка",
+            (x, 0, 3.13),
+            0.3,
+            0.55,
+            MAT_GREEN
+        )
+        parts.append(top)
+
+    elif character_type == 2:
+        top = add_uv_sphere(
+            name + "_Лист",
+            (x, 0, 3.0),
+            (0.25, 0.16, 0.12),
+            MAT_GREEN
+        )
+        parts.append(top)
+
+    # Объединяем части персонажа в один родительский объект
+    bpy.ops.object.empty_add(type="PLAIN_AXES", location=(x, 0, 0))
+    root = bpy.context.object
+    root.name = name + "_Контроллер"
+
+    for obj in parts:
+        world_matrix = obj.matrix_world.copy()
         obj.parent = root
-        obj.matrix_parent_inverse = root.matrix_world.inverted()
-        return obj
+        obj.matrix_world = world_matrix
 
-parent(
-        uv_sphere(
-            name + " тело",
-            (x, 0, 1.55 * scale),
-            (0.72 * scale, 0.48 * scale, 0.92 * scale),
-            body_material
-        )
-    )
-
-    head_z = 2.05 * scale
-
-if kind == "strawberry":
-        for j in range(5):
-            angle = j * math.tau / 5
-            leaf_obj = parent(
-                uv_sphere(
-                    name + " листик",
-                    (
-                        x + math.cos(angle) * 0.18 * scale,
-                        -0.01,
-                        2.42 * scale
-                    ),
-                    (0.12 * scale, 0.09 * scale, 0.28 * scale),
-                    LEAF
-                )
-            )
-            leaf_obj.rotation_euler[1] = math.cos(angle) * 0.55
-            leaf_obj.rotation_euler[0] = math.sin(angle) * 0.55
-
-elif kind == "banana":
-        parent(
-            cylinder_between(
-                name + " хвостик",
-                (x, 0, 2.35 * scale),
-                (x + 0.13 * scale, 0, 2.65 * scale),
-                0.09 * scale,
-                GREEN
-            )
-        )
-
-elif kind == "carrot":
-        bpy.ops.mesh.primitive_cone_add(
-            vertices=24,
-            radius1=0.12 * scale,
-            radius2=0.48 * scale,
-            depth=0.9 * scale,
-            location=(x, 0, 2.45 * scale)
-        )
-        cone = parent(bpy.context.object)
-        cone.name = name + " ботва"
-        cone.data.materials.append(LEAF)
-Глаза.
-for eye_x in [-0.24, 0.24]:
-parent(
-uv_sphere(
-name + " глаз",
-(x + eye_x * scale, -0.425 * scale, head_z),
-(0.17 * scale, 0.075 * scale, 0.22 * scale),
-WHITE
-)
-)
-
-parent(
-            uv_sphere(
-                name + " зрачок",
-                (x + eye_x * scale, -0.50 * scale, head_z - 0.015 * scale),
-                (0.075 * scale, 0.04 * scale, 0.11 * scale),
-                BLACK
-            )
-        )
-
-mouth = parent(
-        uv_sphere(
-            name + " рот",
-            (x, -0.49 * scale, 1.72 * scale),
-            (0.13 * scale, 0.055 * scale, 0.055 * scale),
-            BLACK
-        )
-    )
-
-for frame, height in [
-        (1, 0.04),
-        (8, 0.15),
-        (15, 0.04),
-        (22, 0.13),
-        (29, 0.04),
-        (36, 0.11),
-        (43, 0.04)
-    ]:
-        frame = min(frame, end_frame)
-        mouth.scale.z = height * scale
-        mouth.keyframe_insert(data_path="scale", frame=frame)
-Руки и ноги.
-for side in [-1, 1]:
-arm = parent(
-cylinder_between(
-name + " рука",
-(x + side * 0.52 * scale, 0, 1.75 * scale),
-(x + side * 0.95 * scale, -0.02, 1.35 * scale),
-0.095 * scale,
-body_material
-)
-)
-
-hand = parent(
-            uv_sphere(
-                name + " ладонь",
-                (x + side * 0.95 * scale, -0.02, 1.34 * scale),
-                (0.14 * scale, 0.13 * scale, 0.14 * scale),
-                body_material
-            )
-        )
-
-for frame, angle in [
-            (1, -0.12 * side),
-            (12, 0.5 * side),
-            (24, -0.25 * side),
-            (36, 0.35 * side),
-            (48, -0.12 * side)
-        ]:
-            frame = min(frame, end_frame)
-
-arm.rotation_euler[1] = angle
-            arm.keyframe_insert(data_path="rotation_euler", frame=frame)
-
-hand.rotation_euler[1] = angle
-            hand.keyframe_insert(data_path="rotation_euler", frame=frame)
-
-parent(
-            cylinder_between(
-                name + " нога",
-                (x + side * 0.25 * scale, 0, 0.78 * scale),
-                (x + side * 0.32 * scale, -0.02, 0.28 * scale),
-                0.11 * scale,
-                body_material
-            )
-        )
-
-parent(
-            uv_sphere(
-                name + " ботинок",
-                (x + side * 0.34 * scale, -0.08, 0.19 * scale),
-                (0.22 * scale, 0.28 * scale, 0.13 * scale),
-                BLACK
-            )
-        )
-
-key_bob(root, end_frame)
     return root
+
+
+# ============================================================
+# АНИМАЦИЯ
+# ============================================================
+
+def animate_character(obj, start_frame, end_frame, offset=0):
+    obj.location.z = 0
+    obj.keyframe_insert(data_path="location", frame=start_frame)
+
+    middle = (start_frame + end_frame) // 2
+
+    obj.location.z = 0.35
+    obj.keyframe_insert(data_path="location", frame=middle)
+
+    obj.location.z = 0
+    obj.keyframe_insert(data_path="location", frame=end_frame)
+
+    obj.rotation_euler[1] = -0.12
+    obj.keyframe_insert(data_path="rotation_euler", frame=start_frame)
+
+    obj.rotation_euler[1] = 0.12
+    obj.keyframe_insert(data_path="rotation_euler", frame=middle)
+
+    obj.rotation_euler[1] = -0.12
+    obj.keyframe_insert(data_path="rotation_euler", frame=end_frame)
+
+    if obj.animation_data and obj.animation_data.action:
+        try:
+            for fcurve in obj.animation_data.action.fcurves:
+                for key in fcurve.keyframe_points:
+                    key.interpolation = "BEZIER"
+        except Exception:
+            pass
+
+
+# ============================================================
+# СЦЕНА
+# ============================================================
 
 def setup_scene():
     bpy.ops.object.select_all(action="SELECT")
     bpy.ops.object.delete(use_global=False)
 
     scene = bpy.context.scene
-Движок для Blender 5.0.
-if "BLENDER_EEVEE_NEXT" in [
-item.identifier
-for item in scene.render.bl_rna.properties["engine"].enum_items
-]:
-scene.render.engine = "BLENDER_EEVEE_NEXT"
-else:
-scene.render.engine = "BLENDER_EEVEE"
 
-if hasattr(scene, "eevee"):
-        if hasattr(scene.eevee, "taa_render_samples"):
-            scene.eevee.taa_render_samples = 16
-
-scene.render.resolution_x = 540
-    scene.render.resolution_y = 960
+    scene.render.engine = "BLENDER_EEVEE_NEXT"
+    scene.render.resolution_x = WIDTH
+    scene.render.resolution_y = HEIGHT
     scene.render.resolution_percentage = 100
-    scene.render.fps = 20
+    scene.render.fps = FPS
+
     scene.frame_start = 1
-    scene.frame_end = max(160, int(DURATION * scene.render.fps))
-Кадры сохраняются в PNG, не в FFMPEG.
-scene.render.image_settings.file_format = "PNG"
-scene.render.image_settings.color_mode = "RGB"
-scene.render.filepath = str(FRAME_DIR / "frame_")
-scene.render.use_file_extension = True
-scene.render.film_transparent = False
+    scene.frame_end = max(1, int(DURATION * FPS))
 
-    scene.world.color = (0.025, 0.035, 0.07)
-Пол.
-bpy.ops.mesh.primitive_plane_add(
-size=200,
-location=(0, 0, 0)
-)
-floor = bpy.context.object
-floor.name = "Большой пол"
-floor.data.materials.append(FLOOR)
-Задняя стена.
-bpy.ops.mesh.primitive_plane_add(
-size=200,
-location=(0, 4, 8),
-rotation=(math.pi / 2, 0, 0)
-)
-wall = bpy.context.object
-wall.name = "Фон студии"
-wall.data.materials.append(WALL)
-Декоративные шары.
-for i in range(7):
-uv_sphere(
-"Декоративный шар",
-(-4.2 + i * 1.4, 1.2, 4.5 + (i % 2) * 1.2),
-(0.12, 0.12, 0.12),
-CYAN
-)
-Освещение.
-bpy.ops.object.light_add(
-type="AREA",
-location=(0, -7, 9)
-)
-key = bpy.context.object
-key.data.energy = 1500
-key.data.shape = "DISK"
-key.data.size = 8
-key.rotation_euler = (math.radians(25), 0, 0)
+    scene.render.image_settings.file_format = "PNG"
+    scene.render.image_settings.color_mode = "RGBA"
 
-bpy.ops.object.light_add(
-        type="AREA",
-        location=(-6, -2, 4)
-    )
-    fill = bpy.context.object
-    fill.data.energy = 700
-    fill.data.size = 6
-    fill.rotation_euler = (
-        math.radians(45),
-        0,
-        math.radians(-35)
-    )
+    scene.render.film_transparent = False
 
-bpy.ops.object.light_add(
-        type="AREA",
-        location=(5, 2, 6)
-    )
-    rim = bpy.context.object
-    rim.data.energy = 1100
-    rim.data.size = 5
-    rim.rotation_euler = (
-        math.radians(35),
-        0,
-        math.radians(145)
-    )
-Камера.
-bpy.ops.object.camera_add(
-location=(0, -13.5, 5.2)
-)
-camera = bpy.context.object
+    scene.world.color = (0.025, 0.025, 0.04)
 
-camera.rotation_euler = (
-        Vector((0, 0, 2.4)) - camera.location
-    ).to_track_quat("-Z", "Y").to_euler()
+    # Цвет фона
+    world = scene.world
+    world.use_nodes = True
+    background = world.node_tree.nodes.get("Background")
+    if background:
+        background.inputs["Color"].default_value = (0.025, 0.035, 0.09, 1)
+        background.inputs["Strength"].default_value = 0.6
 
-camera.data.type = "ORTHO"
-    camera.data.ortho_scale = 8.4
-    camera.data.lens = 50
+    # Пол
+    bpy.ops.mesh.primitive_plane_add(size=200, location=(0, 0, 0))
+    floor = bpy.context.object
+    floor.name = "Пол"
+    floor.data.materials.append(MAT_FLOOR)
+
+    # Камера
+    bpy.ops.object.camera_add(location=(0, -12, 4.2))
+    camera = bpy.context.object
+    camera.name = "Камера"
+
+    target = Vector((0, 0, 1.9))
+    direction = target - camera.location
+    camera.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
+    camera.data.type = "ORTHO"
+    camera.data.ortho_scale = 8.5
+
     scene.camera = camera
-Персонажи.
-category = DATA.get("category", "SERIES")
 
-if category == "SERIES":
-        character("strawberry", -1.35, "Клубника", RED, 0.9, scene.frame_end)
-        character("banana", 1.25, "Банан", YELLOW, 0.92, scene.frame_end)
+    # Свет
+    bpy.ops.object.light_add(
+        type="AREA",
+        location=(0, -5, 8)
+    )
+    light = bpy.context.object
+    light.data.energy = 1500
+    light.data.shape = "DISK"
+    light.data.size = 7
 
-elif category == "HOME":
-        character("potato", -1.2, "Картошка", BROWN, 0.95, scene.frame_end)
-        character("carrot", 1.2, "Морковка", ORANGE, 0.95, scene.frame_end)
+    # Дополнительный свет
+    bpy.ops.object.light_add(
+        type="AREA",
+        location=(5, 2, 5)
+    )
+    light2 = bpy.context.object
+    light2.data.energy = 900
+    light2.data.color = (0.3, 0.5, 1.0)
+    light2.data.size = 5
 
-else:
-        character("cucumber", -1.2, "Зелёный помощник", GREEN, 0.95, scene.frame_end)
-        character("banana", 1.2, "Жёлтый помощник", YELLOW, 0.95, scene.frame_end)
-Заголовок.
-title = add_text(
-DATA.get("title", "Мультфильм"),
-(0, -0.7, 5.15),
-0.38,
-WHITE
-)
-title.rotation_euler[0] = math.radians(90)
-Подписи сцен.
-scenes = DATA.get("scenes", [])
+    # Персонажи
+    characters = [
+        create_character("Клубника", -2.0, MAT_RED, 0),
+        create_character("Банан", 0, MAT_YELLOW, 1),
+        create_character("Огурец", 2.0, MAT_GREEN, 2)
+    ]
 
-for i, item in enumerate(scenes[:3]):
-        obj = add_text(
-            item.get("title", ""),
-            (0, -0.65, 4.35),
-            0.28,
-            CYAN
+    # Заголовок
+    title = str(DATA.get("title", "Весёлые приключения"))
+    title = title[:45]
+
+    title_obj = add_text(
+        title,
+        (0, -0.7, 4.3),
+        0.42,
+        MAT_WHITE
+    )
+
+    title_obj.rotation_euler[0] = math.radians(90)
+
+    # Анимация
+    total_frames = scene.frame_end
+    third = max(1, total_frames // 3)
+
+    for index, character in enumerate(characters):
+        animate_character(
+            character,
+            1,
+            total_frames,
+            index
         )
-        obj.rotation_euler[0] = math.radians(90)
 
-start = int((i + 1) * scene.frame_end / 4)
-        finish = int((i + 2) * scene.frame_end / 4)
+    # Персонажи немного перемещаются
+    for index, character in enumerate(characters):
+        original_x = [-2.0, 0, 2.0][index]
 
-for frame, scale in [
-            (1, 0.001),
-            (max(1, start), 0.001),
-            (min(scene.frame_end, start + 2), 1),
-            (max(1, finish), 1),
-            (min(scene.frame_end, finish + 2), 0.001)
-        ]:
-            obj.scale = (scale, scale, scale)
-            obj.keyframe_insert(data_path="scale", frame=frame)
-Небольшое движение камеры.
-for frame, x, z in [
-(1, 0, 5.2),
-(scene.frame_end // 2, 0.25, 5.0),
-(scene.frame_end, 0, 5.2)
-]:
-camera.location.x = x
-camera.location.z = z
-camera.keyframe_insert(data_path="location", frame=frame)
+        character.location.x = original_x - 0.25
+        character.keyframe_insert(data_path="location", frame=1)
 
-scene.view_settings.view_transform = "Standard"
+        character.location.x = original_x + 0.25
+        character.keyframe_insert(data_path="location", frame=total_frames // 2)
+
+        character.location.x = original_x - 0.25
+        character.keyframe_insert(data_path="location", frame=total_frames)
+
+    # Настройки качества
+    scene.render.image_settings.color_depth = "8"
+    scene.view_settings.view_transform = "Standard"
+
+    return scene
+
+
+# ============================================================
+# РЕНДЕР КАДРОВ И СБОРКА ВИДЕО
+# ============================================================
+
+def render_video(scene):
+    FRAME_DIR.mkdir(parents=True, exist_ok=True)
+    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    # Удаляем старые кадры
+    for old_file in FRAME_DIR.glob("frame_*.png"):
+        old_file.unlink()
+
+    scene.render.image_settings.file_format = "PNG"
     scene.render.filepath = str(FRAME_DIR / "frame_")
-Запуск сцены.
-OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-if FRAME_DIR.exists():
-    shutil.rmtree(FRAME_DIR)
+    print("Начинаем рендеринг кадров...")
+    bpy.ops.render.render(animation=True)
 
-FRAME_DIR.mkdir(parents=True, exist_ok=True)
+    frames = list(FRAME_DIR.glob("frame_*.png"))
 
-setup_scene()
+    if not frames:
+        raise RuntimeError("Blender не создал PNG-кадры.")
 
-print("Начинаем рендер кадров...")
-bpy.ops.render.render(animation=True)
+    print("Создано кадров:", len(frames))
 
-print("Собираем MP4 через FFmpeg...")
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("FFmpeg не найден.")
 
-subprocess.run(
-    [
-        "ffmpeg", "-y",
-        "-loglevel", "error",
-        "-framerate", "20",
+    command = [
+        ffmpeg,
+        "-y",
+        "-framerate", str(FPS),
         "-i", str(FRAME_DIR / "frame_%04d.png"),
         "-c:v", "libx264",
-        "-preset", "veryfast",
+        "-preset", "ultrafast",
         "-crf", "23",
         "-pix_fmt", "yuv420p",
         "-movflags", "+faststart",
         str(OUTPUT_PATH)
-    ],
-    check=True
-)
+    ]
 
-if not OUTPUT_PATH.exists() or OUTPUT_PATH.stat().st_size < 100_000:
-    raise RuntimeError("FFmpeg не создал итоговое видео.")
+    print("Собираем MP4...")
+    subprocess.run(command, check=True)
 
-print("3D_RENDER_COMPLETE", OUTPUT_PATH)
-</CodeBlock>
+    if not OUTPUT_PATH.exists() or OUTPUT_PATH.stat().st_size == 0:
+        raise RuntimeError("FFmpeg не создал готовое видео.")
+
+    print("Видео успешно создано:", OUTPUT_PATH)
+
+
+# ============================================================
+# ЗАПУСК
+# ============================================================
+
+def main():
+    print("================================")
+    print("AI SHORTS FACTORY — BLENDER 5")
+    print("================================")
+
+    scene = setup_scene()
+    render_video(scene)
+
+    print("================================")
+    print("3D-ВИДЕО ГОТОВО!")
+    print("================================")
+
+
+if __name__ == "__main__":
+    main()
