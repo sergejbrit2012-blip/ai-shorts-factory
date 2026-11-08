@@ -48,7 +48,7 @@ for block in list(bpy.data.materials):
 # ============================================================
 
 scene = bpy.context.scene
-scene.render.engine = "BLENDER_EEVEE_NEXT"
+scene.render.engine = "BLENDER_EEVEE"
 
 scene.render.resolution_x = WIDTH
 scene.render.resolution_y = HEIGHT
