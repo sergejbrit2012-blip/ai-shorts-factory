@@ -22,10 +22,11 @@ jobs:
       - name: Download project
         uses: actions/checkout@v4
 
-      - name: Install system tools
+      - name: Install system tools and Blender
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg espeak-ng
+          sudo apt-get install -y ffmpeg espeak-ng blender
+          blender --version
 
       - name: Install Python
         uses: actions/setup-python@v5
@@ -43,7 +44,7 @@ jobs:
         run: |
           python -c "import os,json; d=json.loads(os.environ['YOUTUBE_TOKEN_JSON']); print('TOKEN CHECK:', {k: bool(d.get(k)) for k in ['client_id','client_secret','refresh_token']}); open('token.json','w').write(json.dumps(d))"
 
-      - name: Generate and upload Short
+      - name: Generate and upload 3D Short
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           UPLOAD_TO_YOUTUBE: 'true'
