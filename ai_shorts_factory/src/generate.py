@@ -198,11 +198,11 @@ def get_video_slot():
             schedule = event.get("schedule", "")
 
             slot = {
-                "0 7 * * *": "1",
-                "0 10 * * *": "2",
-                "0 13 * * *": "3",
-                "0 16 * * *": "4",
-                "0 19 * * *": "5",
+                "30 7 * * *": "1",
+                "30 10 * * *": "2",
+                "30 13 * * *": "3",
+                "30 16 * * *": "4",
+                "30 19 * * *": "5",
             }.get(schedule, "1")
 
         except Exception:
@@ -706,28 +706,25 @@ def make_voice(text, path, category="HOME"):
 
 
 def render(data, audio_path, video_path):
-    slides = []
+    """Create a procedural 3D cartoon with Blender, then mux Russian narration."""
+    import shutil
 
-    for i, scene in enumerate(data["scenes"]):
-        slides.append(
-            make_slide(
-                scene.get("kicker", "ТЕХНОЛОГИИ"),
-                scene["title"],
-                scene["body"],
-                i,
-                3
-            )
+    blender = shutil.which("blender")
+    if not blender:
+        raise RuntimeError(
+            "Blender не найден. Проверь шаг установки Blender в daily.yml."
         )
 
-    hook = make_slide(
-        "СЕГОДНЯ ЗА 40 СЕКУНД",
-        data["title"],
-        "Разбираемся простыми словами",
-        0,
-        4
-    )
+    scene_script = Path(__file__).resolve().parent / "blender_scene.py"
+    if not scene_script.exists():
+        raise RuntimeError(f"Не найден файл сцены Blender: {scene_script}")
 
-    allslides = [hook] + slides
+    scene_json = OUT / "blender_scene_data.json"
+    silent_video = OUT / "cartoon_no_audio.mp4"
+    scene_json.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8"
+    )
 
     probe = subprocess.check_output(
         [
@@ -738,61 +735,39 @@ def render(data, audio_path, video_path):
         ],
         text=True
     )
-
     duration = min(float(probe.strip()), MAX_DURATION)
-    seg = duration / len(allslides)
+    duration = max(8.0, duration)
 
-    inputs = []
+    print("Запускаем Blender: создание 3D-персонажей и сцен...")
+    command = [
+        blender, "-b", "-t", str(max(1, min(4, os.cpu_count() or 2))),
+        "--python", str(scene_script),
+        "--",
+        "--data", str(scene_json),
+        "--output", str(silent_video),
+        "--duration", str(duration)
+    ]
 
-    for p in allslides:
-        inputs += [
-            "-loop", "1",
-            "-t", str(seg),
-            "-i", str(p)
-        ]
+    subprocess.run(command, check=True)
 
-    inputs += ["-i", str(audio_path)]
+    if not silent_video.exists() or silent_video.stat().st_size < 100_000:
+        raise RuntimeError("Blender не создал готовое видео.")
 
-    filters = "".join(
-        f"[{i}:v]scale=1080:1920:force_original_aspect_ratio=increase,"
-        f"crop=1080:1920,setsar=1,format=yuv420p[v{i}];"
-        for i in range(len(allslides))
-    )
-
-    filters += "".join(
-        f"[v{i}]"
-        for i in range(len(allslides))
-    )
-
-    filters += (
-        f"concat=n={len(allslides)}:v=1:a=0[vout]"
-    )
-
-    cmd = (
-        ["ffmpeg", "-y"]
-        + inputs
-        + [
-            "-filter_complex", filters,
-            "-map", "[vout]",
-            "-map", f"{len(allslides)}:a:0",
-            "-c:v", "libx264",
-            "-preset", "ultrafast",
-            "-crf", "24",
-            "-r", "30",
-            "-c:a", "aac",
-            "-b:a", "128k",
-            "-t", str(MAX_DURATION),
-            "-shortest",
+    print("Добавляем русскую озвучку...")
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-loglevel", "error",
+            "-i", str(silent_video),
+            "-i", str(audio_path),
+            "-map", "0:v:0", "-map", "1:a:0",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "128k",
+            "-t", str(duration),
             "-movflags", "+faststart",
             str(video_path)
-        ]
-    )
-
-    subprocess.run(
-        cmd,
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL
+        ],
+        check=True
     )
 
     final_probe = subprocess.check_output(
@@ -804,11 +779,8 @@ def render(data, audio_path, video_path):
         ],
         text=True
     )
-
-    final_duration = float(final_probe.strip())
-
-    print(f"Video duration: {final_duration:.1f} seconds")
-    print("Video format: 1080x1920 vertical")
+    print(f"Длительность 3D-видео: {float(final_probe.strip()):.1f} секунд")
+    print("Формат: вертикальный 1080x1920, 3D-анимация")
 
 
 # =========================================================
