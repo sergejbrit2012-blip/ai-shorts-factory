@@ -25,32 +25,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            ffmpeg \
-            espeak-ng \
-            libegl1 \
-            libegl-mesa0 \
-            libgl1 \
-            libglx-mesa0 \
-            libgles2 \
-            libgbm1 \
-            libxrender1 \
-            libxi6 \
-            libxfixes3 \
-            libxkbcommon0 \
-            libsm6 \
-            libxxf86vm1 \
-            libxrandr2 \
-            libxinerama1 \
-            libxcursor1 \
-            xvfb
-
-      - name: Check Blender
-        run: |
-          if ! command -v blender >/dev/null 2>&1; then
-            sudo apt-get install -y blender
-          fi
-          blender --version
+          sudo apt-get install -y ffmpeg espeak-ng
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -76,13 +51,10 @@ jobs:
 
       - name: Generate video
         env:
+          AGNES_API_KEY: ${{ secrets.AGNES_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           UPLOAD_TO_YOUTUBE: 'true'
           YOUTUBE_PRIVACY: 'private'
-          LIBGL_ALWAYS_SOFTWARE: '1'
-          MESA_LOADER_DRIVER_OVERRIDE: 'llvmpipe'
-          PYOPENGL_PLATFORM: 'egl'
-          EGL_PLATFORM: 'surfaceless'
         run: |
           python src/generate.py
 
