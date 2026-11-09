@@ -2,18 +2,25 @@
 import os
 import json
 import re
-import random
+import time
 import urllib.request
+import urllib.error
 import subprocess
-import shutil
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "output"
 OUT.mkdir(exist_ok=True)
 
 MAX_DURATION = 44.5
+AGNES_BASE = "https://apihub.agnes-ai.com"
+AGNES_MODEL = os.getenv("AGNES_VIDEO_MODEL", "agnes-video-v2.0")
+SCENE_SECONDS = 15
+SCENE_FRAMES = 361
+POLL_INTERVAL = 30
+MAX_WAIT_SECONDS = 20 * 60
 
 HERO_RULES = {
     "банан": ("banana", "Банан", "yellow"),
@@ -102,7 +109,6 @@ def make_fallback_script():
     day = datetime.now(timezone.utc).timetuple().tm_yday
     slot = get_video_slot()
     topic = topics[((day - 1) * 5 + slot - 1) % len(topics)]
-
     hero = choose_hero(topic)
 
     voiceover = (
@@ -144,31 +150,24 @@ def make_script():
     api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
 
     if not api_key:
-        print("Нет API-ключа. Используем запасной сценарий.")
+        print("Нет OPENROUTER_API_KEY. Используем запасной сценарий.")
         return make_fallback_script()
 
     prompt = """
 Придумай оригинальный сценарий для русского YouTube Shorts.
 
-Выбери интересную тему о продуктах, еде или хранении продуктов.
-Главный герой должен быть тем продуктом, о котором рассказывается.
-
-Примеры:
-- Как хранить бананы — главный герой Банан.
-- Как выбрать сладкий арбуз — главный герой Арбуз.
-- Чем полезна клубника — главный герой Клубника.
-
-Герой должен говорить от первого лица.
-Сценарий должен быть интересным, полезным и понятным.
+Тема: интересный и полезный совет о продуктах, еде или их хранении.
+Главный герой — сам продукт, который разговаривает от первого лица.
 
 Требования:
 - Русский язык.
 - Озвучка примерно 65-90 слов.
-- Начало с интересной фразы.
+- Интересное начало.
 - Ровно три сцены.
 - У каждой сцены есть kicker, title и body.
+- Каждая сцена должна описывать отдельное действие.
 - Не придумывай медицинские обещания.
-- Не выдумывай опасные советы по хранению продуктов.
+- Не выдумывай опасные советы по хранению.
 - Верни только JSON.
 
 Формат:
@@ -177,9 +176,9 @@ def make_script():
 "description":"Описание и #shorts",
 "voiceover":"Полный текст озвучки",
 "scenes":[
-{"kicker":"НАЧАЛО","title":"Заголовок","body":"Описание"},
-{"kicker":"СОВЕТ","title":"Заголовок","body":"Описание"},
-{"kicker":"ФИНАЛ","title":"Заголовок","body":"Описание"}
+{"kicker":"НАЧАЛО","title":"Заголовок","body":"Описание действия"},
+{"kicker":"СОВЕТ","title":"Заголовок","body":"Описание действия"},
+{"kicker":"ФИНАЛ","title":"Заголовок","body":"Описание действия"}
 ]
 }
 """
@@ -189,7 +188,7 @@ def make_script():
         "messages": [
             {
                 "role": "system",
-                "content": "Ты профессиональный автор сценариев коротких мультфильмов. Возвращай только JSON."
+                "content": "Ты профессиональный автор сценариев мультфильмов. Возвращай только JSON."
             },
             {
                 "role": "user",
@@ -222,8 +221,7 @@ def make_script():
         if not choices:
             raise ValueError("Нейросеть не вернула ответ.")
 
-        message = choices[0].get("message") or {}
-        content = message.get("content")
+        content = (choices[0].get("message") or {}).get("content")
 
         if isinstance(content, list):
             content = "".join(
@@ -273,7 +271,10 @@ def make_script():
                 "body": clean_text(scene.get("body"), 350)
             })
 
-        if not all(item["title"] and item["body"] for item in clean_scenes):
+        if not all(
+            item["title"] and item["body"]
+            for item in clean_scenes
+        ):
             raise ValueError("В сцене отсутствует текст.")
 
         if "#shorts" not in description.lower():
@@ -308,17 +309,12 @@ def make_voice(text, path, category="HOME"):
     if not text or not re.search(r"[а-яА-ЯёЁ]", text):
         raise RuntimeError("Нет русского текста для озвучки.")
 
-    # Espeak — бесплатный синтезатор, но его голос сам по себе
-    # звучит синтетически. Здесь добавлены паузы и обработка.
-    speed = "125"
-    pitch = "48"
-
     subprocess.run(
         [
             "espeak-ng",
             "-v", "ru",
-            "-s", speed,
-            "-p", pitch,
+            "-s", "125",
+            "-p", "48",
             "-a", "175",
             "-g", "10",
             "-w", str(wav),
@@ -352,15 +348,10 @@ def make_voice(text, path, category="HOME"):
     )
 
     wav.unlink(missing_ok=True)
-
     print("Озвучка создана:", path)
 
 
 def make_subtitles(text, audio_path, subtitle_path):
-    """
-    Создаёт простой SRT с распределением фраз по длительности аудио.
-    Это приблизительная синхронизация, не распознавание речи.
-    """
     probe = subprocess.check_output(
         [
             "ffprobe", "-v", "error",
@@ -372,13 +363,19 @@ def make_subtitles(text, audio_path, subtitle_path):
     )
 
     duration = float(probe.strip())
-    sentences = re.split(r"(?<=[.!?])\s+", clean_text(text, 2000))
+    sentences = re.split(
+        r"(?<=[.!?])\s+",
+        clean_text(text, 2000)
+    )
     sentences = [s.strip() for s in sentences if s.strip()]
 
     if not sentences:
-        return
+        raise RuntimeError("Не удалось создать субтитры.")
 
-    weights = [max(1, len(re.findall(r"\w+", s))) for s in sentences]
+    weights = [
+        max(1, len(re.findall(r"\w+", sentence)))
+        for sentence in sentences
+    ]
     total = sum(weights)
     current = 0.0
 
@@ -392,7 +389,9 @@ def make_subtitles(text, audio_path, subtitle_path):
 
     lines = []
 
-    for index, (sentence, weight) in enumerate(zip(sentences, weights), 1):
+    for index, (sentence, weight) in enumerate(
+        zip(sentences, weights), 1
+    ):
         segment = duration * weight / total
         end = min(duration, current + segment)
 
@@ -405,28 +404,312 @@ def make_subtitles(text, audio_path, subtitle_path):
 
         current = end
 
-    subtitle_path.write_text("\n".join(lines), encoding="utf-8")
+    subtitle_path.write_text(
+        "\n".join(lines),
+        encoding="utf-8"
+    )
+
     print("Субтитры созданы:", subtitle_path)
 
 
+def find_value(data, names):
+    if isinstance(data, dict):
+        for name in names:
+            value = data.get(name)
+            if value not in (None, ""):
+                return value
+
+        for value in data.values():
+            found = find_value(value, names)
+            if found not in (None, ""):
+                return found
+
+    elif isinstance(data, list):
+        for item in data:
+            found = find_value(item, names)
+            if found not in (None, ""):
+                return found
+
+    return None
+
+
+def agnes_request(url, method="GET", payload=None, timeout=120):
+    api_key = os.getenv("AGNES_API_KEY", "").strip()
+
+    if not api_key:
+        raise RuntimeError(
+            "Не найден секрет AGNES_API_KEY в GitHub Actions."
+        )
+
+    headers = {
+        "Authorization": "Bearer " + api_key,
+        "Accept": "application/json"
+    }
+
+    body = None
+
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+        body = json.dumps(payload).encode("utf-8")
+
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers=headers,
+        method=method
+    )
+
+    for attempt in range(5):
+        try:
+            with urllib.request.urlopen(
+                request, timeout=timeout
+            ) as response:
+                return json.loads(
+                    response.read().decode("utf-8")
+                )
+
+        except urllib.error.HTTPError as error:
+            details = error.read().decode(
+                "utf-8", errors="replace"
+            )[:1500]
+
+            if error.code == 429 and attempt < 4:
+                delay = 30 * (2 ** attempt)
+                print(
+                    f"Agnes ограничил частоту запросов. "
+                    f"Повтор через {delay} секунд."
+                )
+                time.sleep(delay)
+                continue
+
+            raise RuntimeError(
+                f"Agnes API HTTP {error.code}: {details}"
+            )
+
+        except Exception:
+            if attempt == 4:
+                raise
+            time.sleep(10)
+
+    raise RuntimeError("Не удалось выполнить запрос Agnes API.")
+
+
+def create_agnes_video(prompt, output_path):
+    print("Отправляем сцену в Agnes AI...")
+    print("Модель:", AGNES_MODEL)
+
+    payload = {
+        "model": AGNES_MODEL,
+        "prompt": prompt,
+        "width": 768,
+        "height": 1152,
+        "num_frames": SCENE_FRAMES,
+        "frame_rate": 24
+    }
+
+    result = agnes_request(
+        AGNES_BASE + "/v1/videos",
+        method="POST",
+        payload=payload
+    )
+
+    video_id = find_value(
+        result,
+        ["video_id", "task_id", "id"]
+    )
+
+    if not video_id:
+        raise RuntimeError(
+            "Agnes не вернул ID задачи: "
+            + json.dumps(result, ensure_ascii=False)[:1500]
+        )
+
+    print("Задача Agnes создана:", video_id)
+
+    started = time.time()
+    video_url = None
+
+    while time.time() - started < MAX_WAIT_SECONDS:
+        time.sleep(POLL_INTERVAL)
+
+        status_data = agnes_request(
+            AGNES_BASE + "/agnesapi?video_id=" + str(video_id)
+        )
+
+        status = str(
+            find_value(status_data, ["status"]) or ""
+        ).lower()
+
+        progress = find_value(
+            status_data, ["progress", "percentage"]
+        )
+
+        if progress is not None:
+            print("Прогресс сцены:", progress)
+
+        video_url = find_value(
+            status_data,
+            ["video_url", "download_url"]
+        )
+
+        if status in ("completed", "complete", "success", "succeeded", "done"):
+            if not video_url:
+                raise RuntimeError(
+                    "Agnes сообщил о готовности, "
+                    "но не вернул ссылку на видео."
+                )
+            break
+
+        if status in ("failed", "error", "cancelled", "canceled"):
+            raise RuntimeError(
+                "Генерация Agnes завершилась ошибкой: "
+                + json.dumps(status_data, ensure_ascii=False)[:1500]
+            )
+
+        print(
+            "Agnes ещё генерирует сцену. Статус:",
+            status or "ожидание"
+        )
+
+    else:
+        raise TimeoutError(
+            "Agnes не успел создать сцену за отведённое время."
+        )
+
+    parsed = urlparse(str(video_url))
+
+    if parsed.scheme not in ("http", "https"):
+        raise RuntimeError("Agnes вернул некорректную ссылку на видео.")
+
+    print("Скачиваем готовую сцену...")
+
+    download_request = urllib.request.Request(
+        str(video_url),
+        headers={"User-Agent": "AI-Shorts-Factory"}
+    )
+
+    with urllib.request.urlopen(
+        download_request, timeout=180
+    ) as response:
+        output_path.write_bytes(response.read())
+
+    if not output_path.exists() or output_path.stat().st_size < 10000:
+        raise RuntimeError("Скачанный видеофайл пустой или повреждён.")
+
+    print("Сцена скачана:", output_path)
+    return output_path
+
+
+def build_scene_prompt(data, scene, scene_number):
+    hero = data["hero"]
+    name = hero["name"]
+
+    actions = [
+        "The character introduces itself to the viewer.",
+        "The character demonstrates the main useful tip.",
+        "The character finishes with a friendly memorable gesture."
+    ]
+
+    action = actions[scene_number - 1]
+
+    return (
+        "Create a high quality polished 3D animated family-friendly "
+        "cartoon video, vertical portrait 9:16 composition. "
+        "A cute anthropomorphic " + hero["id"] +
+        " character, recognizable as " + name +
+        ", is the main hero. "
+        "Keep the same character design throughout this clip: "
+        "large expressive eyes, friendly smiling face, small arms "
+        "and legs, colorful simple clothes. "
+        "Beautiful detailed environment related to the story, "
+        "cinematic soft lighting, rich colors, smooth natural "
+        "character animation, expressive gestures, professional "
+        "animated movie quality. "
+        "The character must be visible clearly in the center. "
+        "Scene action: " + action + " "
+        "Scene heading: " + scene["title"] + ". "
+        "Scene description: " + scene["body"] + ". "
+        "Topic: " + data["title"] + ". "
+        "No written words, no captions, no logos, no watermark. "
+        "Do not show multiple copies of the character."
+    )
+
+
 def render(data, audio_path, video_path):
-    blender = shutil.which("blender")
+    print("Запускаем генерацию видео через Agnes AI.")
+    print("Blender больше не используется.")
 
-    if not blender:
-        raise RuntimeError("Blender не найден.")
+    scene_files = []
 
-    scene_script = Path(__file__).resolve().parent / "blender_scene.py"
+    for index, scene in enumerate(data["scenes"], 1):
+        prompt = build_scene_prompt(data, scene, index)
 
-    if not scene_script.exists():
-        raise RuntimeError(f"Не найден файл: {scene_script}")
+        prompt_file = OUT / f"scene_{index}_prompt.txt"
+        prompt_file.write_text(prompt, encoding="utf-8")
 
-    scene_json = OUT / "blender_scene_data.json"
-    silent_video = OUT / "cartoon_no_audio.mp4"
+        raw_video = OUT / f"scene_{index}_raw.mp4"
+        normalized_video = OUT / f"scene_{index}.mp4"
 
-    scene_json.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
+        print(f"Генерируем сцену {index} из 3...")
+
+        create_agnes_video(prompt, raw_video)
+
+        print("Подготавливаем сцену...")
+
+        subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-loglevel", "error",
+                "-i", str(raw_video),
+                "-an",
+                "-vf",
+                "scale=720:1280:force_original_aspect_ratio=increase,"
+                "crop=720:1280,fps=24,setsar=1,format=yuv420p",
+                "-c:v", "libx264",
+                "-preset", "veryfast",
+                "-crf", "20",
+                "-movflags", "+faststart",
+                str(normalized_video)
+            ],
+            check=True
+        )
+
+        if not normalized_video.exists() or normalized_video.stat().st_size < 10000:
+            raise RuntimeError(
+                f"Не удалось подготовить сцену {index}."
+            )
+
+        scene_files.append(normalized_video)
+
+    concat_file = OUT / "concat_list.txt"
+
+    concat_file.write_text(
+        "".join(
+            "file '" + str(path.resolve()) + "'\n"
+            for path in scene_files
+        ),
         encoding="utf-8"
     )
+
+    silent_video = OUT / "agnes_combined.mp4"
+
+    print("Объединяем три сцены...")
+
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-loglevel", "error",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", str(concat_file),
+            "-c", "copy",
+            str(silent_video)
+        ],
+        check=True
+    )
+
+    if not silent_video.exists() or silent_video.stat().st_size < 30000:
+        raise RuntimeError("Не удалось объединить сцены.")
 
     probe = subprocess.check_output(
         [
@@ -439,33 +722,11 @@ def render(data, audio_path, video_path):
     )
 
     duration = min(float(probe.strip()), MAX_DURATION)
-    duration = max(8.0, duration)
-
-    command = [
-        blender,
-        "-b",
-        "-t", str(max(1, min(4, os.cpu_count() or 2))),
-        "--python", str(scene_script),
-        "--",
-        "--data", str(scene_json),
-        "--output", str(silent_video),
-        "--duration", str(duration)
-    ]
-
-    print("Запускаем Blender...")
-
-    subprocess.run(command, check=True)
-
-    if not silent_video.exists() or silent_video.stat().st_size < 100_000:
-        raise RuntimeError("Blender не создал видео.")
+    duration = max(1.0, duration)
 
     subtitle_path = OUT / "subtitles.srt"
     make_subtitles(data["voiceover"], audio_path, subtitle_path)
 
-    print("Собираем финальное видео...")
-
-    # Вшиваем субтитры в изображение. FFmpeg subtitles-фильтр
-    # использует libass, если он доступен в сборке FFmpeg.
     subtitle_filter = (
         "subtitles="
         + str(subtitle_path).replace("\\", "/").replace(":", r"\:")
@@ -473,6 +734,8 @@ def render(data, audio_path, video_path):
           "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
           "BorderStyle=1,Outline=2,Shadow=1,Alignment=2,MarginV=95'"
     )
+
+    print("Собираем финальное видео с озвучкой...")
 
     command = [
         "ffmpeg", "-y",
@@ -484,7 +747,7 @@ def render(data, audio_path, video_path):
         "-map", "1:a:0",
         "-c:v", "libx264",
         "-preset", "veryfast",
-        "-crf", "21",
+        "-crf", "20",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",
         "-b:a", "160k",
@@ -495,8 +758,9 @@ def render(data, audio_path, video_path):
 
     try:
         subprocess.run(command, check=True)
+
     except subprocess.CalledProcessError:
-        print("Не удалось вшить субтитры. Создаём видео без них.")
+        print("Не удалось вшить субтитры. Повторяем без них.")
 
         subprocess.run(
             [
@@ -508,7 +772,7 @@ def render(data, audio_path, video_path):
                 "-map", "1:a:0",
                 "-c:v", "libx264",
                 "-preset", "veryfast",
-                "-crf", "21",
+                "-crf", "20",
                 "-pix_fmt", "yuv420p",
                 "-c:a", "aac",
                 "-b:a", "160k",
@@ -519,7 +783,7 @@ def render(data, audio_path, video_path):
             check=True
         )
 
-    if not video_path.exists() or video_path.stat().st_size < 100_000:
+    if not video_path.exists() or video_path.stat().st_size < 30000:
         raise RuntimeError("Финальное видео не создано.")
 
     print("Готовое видео:", video_path)
@@ -573,8 +837,11 @@ def upload(video_path, data):
 
 def main():
     print("================================")
-    print("AI SHORTS FACTORY")
+    print("AI SHORTS FACTORY — AGNES AI")
     print("================================")
+
+    if not os.getenv("AGNES_API_KEY", "").strip():
+        raise RuntimeError("Добавь секрет AGNES_API_KEY в GitHub.")
 
     data = make_script()
 
@@ -586,10 +853,10 @@ def main():
     audio = OUT / "voice.mp3"
     video = OUT / "short.mp4"
 
-    print("Создаём озвучку...")
+    print("Создаём русскую озвучку...")
     make_voice(data["voiceover"], audio, data["category"])
 
-    print("Создаём 3D-видео...")
+    print("Создаём AI-видео...")
     render(data, audio, video)
 
     if os.getenv("UPLOAD_TO_YOUTUBE", "false").lower() == "true":
