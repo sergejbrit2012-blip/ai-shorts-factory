@@ -8,7 +8,7 @@ import urllib.error
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlencode
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "output"
@@ -16,11 +16,11 @@ OUT.mkdir(exist_ok=True)
 
 MAX_DURATION = 44.5
 AGNES_BASE = "https://apihub.agnes-ai.com"
-AGNES_MODEL = os.getenv("AGNES_VIDEO_MODEL", "agnes-video-v2.0")
-SCENE_SECONDS = 15
-SCENE_FRAMES = 361
-POLL_INTERVAL = 30
-MAX_WAIT_SECONDS = 20 * 60
+AGNES_MODEL = "agnes-video-2.5-flash"
+
+SCENE_SECONDS = "12"
+POLL_INTERVAL = 10
+MAX_WAIT_SECONDS = 30 * 60
 
 HERO_RULES = {
     "банан": ("banana", "Банан", "yellow"),
@@ -116,7 +116,6 @@ def make_fallback_script():
         f"Сегодня расскажу тебе одну полезную вещь. {topic} "
         "Самое главное — соблюдать правильные условия хранения "
         "и регулярно проверять свежесть продукта. "
-        "Не клади продукты куда попало. "
         "Запомни этот совет и поделись им с друзьями!"
     )
 
@@ -161,11 +160,11 @@ def make_script():
 
 Требования:
 - Русский язык.
-- Озвучка примерно 65-90 слов.
+- Озвучка примерно 55-70 слов.
 - Интересное начало.
 - Ровно три сцены.
 - У каждой сцены есть kicker, title и body.
-- Каждая сцена должна описывать отдельное действие.
+- Каждая сцена описывает отдельное действие.
 - Не придумывай медицинские обещания.
 - Не выдумывай опасные советы по хранению.
 - Верни только JSON.
@@ -376,6 +375,7 @@ def make_subtitles(text, audio_path, subtitle_path):
         max(1, len(re.findall(r"\w+", sentence)))
         for sentence in sentences
     ]
+
     total = sum(weights)
     current = 0.0
 
@@ -437,9 +437,7 @@ def agnes_request(url, method="GET", payload=None, timeout=120):
     api_key = os.getenv("AGNES_API_KEY", "").strip()
 
     if not api_key:
-        raise RuntimeError(
-            "Не найден секрет AGNES_API_KEY в GitHub Actions."
-        )
+        raise RuntimeError("Не найден секрет AGNES_API_KEY.")
 
     headers = {
         "Authorization": "Bearer " + api_key,
@@ -452,31 +450,32 @@ def agnes_request(url, method="GET", payload=None, timeout=120):
         headers["Content-Type"] = "application/json"
         body = json.dumps(payload).encode("utf-8")
 
-    request = urllib.request.Request(
-        url,
-        data=body,
-        headers=headers,
-        method=method
-    )
+    retry_codes = (429, 500, 502, 503, 504)
 
     for attempt in range(5):
+        request = urllib.request.Request(
+            url,
+            data=body,
+            headers=headers,
+            method=method
+        )
+
         try:
             with urllib.request.urlopen(
                 request, timeout=timeout
             ) as response:
-                return json.loads(
-                    response.read().decode("utf-8")
-                )
+                raw = response.read().decode("utf-8")
+                return json.loads(raw)
 
         except urllib.error.HTTPError as error:
             details = error.read().decode(
                 "utf-8", errors="replace"
-            )[:1500]
+            )[:2000]
 
-            if error.code == 429 and attempt < 4:
-                delay = 30 * (2 ** attempt)
+            if error.code in retry_codes and attempt < 4:
+                delay = min(90, 15 * (2 ** attempt))
                 print(
-                    f"Agnes ограничил частоту запросов. "
+                    f"Agnes HTTP {error.code}. "
                     f"Повтор через {delay} секунд."
                 )
                 time.sleep(delay)
@@ -486,10 +485,15 @@ def agnes_request(url, method="GET", payload=None, timeout=120):
                 f"Agnes API HTTP {error.code}: {details}"
             )
 
-        except Exception:
+        except (urllib.error.URLError, TimeoutError) as error:
             if attempt == 4:
-                raise
-            time.sleep(10)
+                raise RuntimeError(
+                    f"Ошибка соединения с Agnes: {error}"
+                )
+
+            delay = 10 * (attempt + 1)
+            print(f"Ошибка соединения. Повтор через {delay} секунд.")
+            time.sleep(delay)
 
     raise RuntimeError("Не удалось выполнить запрос Agnes API.")
 
@@ -501,27 +505,29 @@ def create_agnes_video(prompt, output_path):
     payload = {
         "model": AGNES_MODEL,
         "prompt": prompt,
-        "width": 768,
-        "height": 1152,
-        "num_frames": SCENE_FRAMES,
-        "frame_rate": 24
+        "mode": "text",
+        "seconds": SCENE_SECONDS,
+        "size": "720P",
+        "aspect_ratio": "9:16",
+        "n": 1
     }
 
     result = agnes_request(
         AGNES_BASE + "/v1/videos",
         method="POST",
-        payload=payload
+        payload=payload,
+        timeout=180
     )
 
-    video_id = find_value(
-        result,
-        ["video_id", "task_id", "id"]
-    )
+    video_id = find_value(result, ["video_id"])
+
+    if not video_id:
+        video_id = find_value(result, ["task_id"])
 
     if not video_id:
         raise RuntimeError(
-            "Agnes не вернул ID задачи: "
-            + json.dumps(result, ensure_ascii=False)[:1500]
+            "Agnes не вернул video_id: "
+            + json.dumps(result, ensure_ascii=False)[:2000]
         )
 
     print("Задача Agnes создана:", video_id)
@@ -532,8 +538,14 @@ def create_agnes_video(prompt, output_path):
     while time.time() - started < MAX_WAIT_SECONDS:
         time.sleep(POLL_INTERVAL)
 
+        query = urlencode({
+            "video_id": str(video_id),
+            "model_name": AGNES_MODEL
+        })
+
         status_data = agnes_request(
-            AGNES_BASE + "/agnesapi?video_id=" + str(video_id)
+            AGNES_BASE + "/agnesapi?" + query,
+            timeout=120
         )
 
         status = str(
@@ -547,39 +559,49 @@ def create_agnes_video(prompt, output_path):
         if progress is not None:
             print("Прогресс сцены:", progress)
 
-        video_url = find_value(
-            status_data,
-            ["video_url", "download_url"]
+        # В новой версии Agnes ссылка обычно находится
+        # внутри metadata.url.
+        metadata = status_data.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        video_url = (
+            metadata.get("url")
+            or find_value(status_data, ["video_url", "download_url"])
+            or status_data.get("url")
         )
 
-        if status in ("completed", "complete", "success", "succeeded", "done"):
+        if status in (
+            "completed", "complete", "success",
+            "succeeded", "done"
+        ):
             if not video_url:
                 raise RuntimeError(
-                    "Agnes сообщил о готовности, "
-                    "но не вернул ссылку на видео."
+                    "Agnes сообщил о готовности, но не вернул URL: "
+                    + json.dumps(status_data, ensure_ascii=False)[:2000]
                 )
             break
 
         if status in ("failed", "error", "cancelled", "canceled"):
             raise RuntimeError(
                 "Генерация Agnes завершилась ошибкой: "
-                + json.dumps(status_data, ensure_ascii=False)[:1500]
+                + json.dumps(status_data, ensure_ascii=False)[:2000]
             )
 
         print(
-            "Agnes ещё генерирует сцену. Статус:",
+            "Agnes генерирует сцену. Статус:",
             status or "ожидание"
         )
 
     else:
         raise TimeoutError(
-            "Agnes не успел создать сцену за отведённое время."
+            "Agnes не успел создать сцену за 30 минут."
         )
 
     parsed = urlparse(str(video_url))
 
     if parsed.scheme not in ("http", "https"):
-        raise RuntimeError("Agnes вернул некорректную ссылку на видео.")
+        raise RuntimeError("Agnes вернул некорректную ссылку.")
 
     print("Скачиваем готовую сцену...")
 
@@ -589,7 +611,7 @@ def create_agnes_video(prompt, output_path):
     )
 
     with urllib.request.urlopen(
-        download_request, timeout=180
+        download_request, timeout=240
     ) as response:
         output_path.write_bytes(response.read())
 
@@ -605,9 +627,9 @@ def build_scene_prompt(data, scene, scene_number):
     name = hero["name"]
 
     actions = [
-        "The character introduces itself to the viewer.",
-        "The character demonstrates the main useful tip.",
-        "The character finishes with a friendly memorable gesture."
+        "The character introduces itself to the viewer, waves with one hand and smiles.",
+        "The character demonstrates the useful tip with clear physical actions and expressive gestures.",
+        "The character finishes with a friendly memorable gesture, smiles and waves goodbye."
     ]
 
     action = actions[scene_number - 1]
@@ -618,14 +640,15 @@ def build_scene_prompt(data, scene, scene_number):
         "A cute anthropomorphic " + hero["id"] +
         " character, recognizable as " + name +
         ", is the main hero. "
-        "Keep the same character design throughout this clip: "
-        "large expressive eyes, friendly smiling face, small arms "
-        "and legs, colorful simple clothes. "
+        "The character has large expressive eyes, a friendly smiling face, "
+        "small arms and legs, colorful simple clothes. "
+        "Keep the same character appearance throughout this clip. "
         "Beautiful detailed environment related to the story, "
         "cinematic soft lighting, rich colors, smooth natural "
         "character animation, expressive gestures, professional "
         "animated movie quality. "
         "The character must be visible clearly in the center. "
+        "Use a medium camera shot and gentle cinematic camera movement. "
         "Scene action: " + action + " "
         "Scene heading: " + scene["title"] + ". "
         "Scene description: " + scene["body"] + ". "
@@ -637,7 +660,7 @@ def build_scene_prompt(data, scene, scene_number):
 
 def render(data, audio_path, video_path):
     print("Запускаем генерацию видео через Agnes AI.")
-    print("Blender больше не используется.")
+    print("Используется модель:", AGNES_MODEL)
 
     scene_files = []
 
@@ -675,9 +698,7 @@ def render(data, audio_path, video_path):
         )
 
         if not normalized_video.exists() or normalized_video.stat().st_size < 10000:
-            raise RuntimeError(
-                f"Не удалось подготовить сцену {index}."
-            )
+            raise RuntimeError(f"Не удалось подготовить сцену {index}.")
 
         scene_files.append(normalized_video)
 
@@ -711,7 +732,7 @@ def render(data, audio_path, video_path):
     if not silent_video.exists() or silent_video.stat().st_size < 30000:
         raise RuntimeError("Не удалось объединить сцены.")
 
-    probe = subprocess.check_output(
+    audio_duration = float(subprocess.check_output(
         [
             "ffprobe", "-v", "error",
             "-show_entries", "format=duration",
@@ -719,9 +740,19 @@ def render(data, audio_path, video_path):
             str(audio_path)
         ],
         text=True
-    )
+    ).strip())
 
-    duration = min(float(probe.strip()), MAX_DURATION)
+    video_duration = float(subprocess.check_output(
+        [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(silent_video)
+        ],
+        text=True
+    ).strip())
+
+    duration = min(audio_duration, video_duration, MAX_DURATION)
     duration = max(1.0, duration)
 
     subtitle_path = OUT / "subtitles.srt"
@@ -837,7 +868,7 @@ def upload(video_path, data):
 
 def main():
     print("================================")
-    print("AI SHORTS FACTORY — AGNES AI")
+    print("AI SHORTS FACTORY — AGNES VIDEO 2.5 FLASH")
     print("================================")
 
     if not os.getenv("AGNES_API_KEY", "").strip():
