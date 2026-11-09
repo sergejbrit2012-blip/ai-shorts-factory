@@ -1,4 +1,3 @@
-
 import os
 import json
 import re
@@ -15,12 +14,18 @@ OUT = ROOT / "output"
 OUT.mkdir(exist_ok=True)
 
 MAX_DURATION = 44.5
+
 AGNES_BASE = "https://apihub.agnes-ai.com"
 AGNES_MODEL = "agnes-video-2.5-flash"
 
 SCENE_SECONDS = "12"
-POLL_INTERVAL = 10
-MAX_WAIT_SECONDS = 30 * 60
+POLL_INTERVAL = 15
+
+# До часа ожидания свободного места в очереди.
+QUEUE_WAIT_SECONDS = 60 * 60
+
+# До часа ожидания готовности уже принятой задачи.
+MAX_WAIT_SECONDS = 60 * 60
 
 HERO_RULES = {
     "банан": ("banana", "Банан", "yellow"),
@@ -40,17 +45,29 @@ HERO_RULES = {
 }
 
 
+def valid_file(path, minimum_size=10000):
+    path = Path(path)
+    return (
+        path.exists()
+        and path.is_file()
+        and path.stat().st_size >= minimum_size
+    )
+
+
 def get_video_slot():
     slot = os.getenv("VIDEO_SLOT", "").strip()
 
     if not slot:
         event_file = os.getenv("GITHUB_EVENT_PATH", "")
+
         try:
             event = (
                 json.loads(Path(event_file).read_text(encoding="utf-8"))
                 if event_file else {}
             )
+
             schedule = event.get("schedule", "")
+
             slot = {
                 "30 7 * * *": "1",
                 "30 10 * * *": "2",
@@ -58,6 +75,7 @@ def get_video_slot():
                 "30 16 * * *": "4",
                 "30 19 * * *": "5",
             }.get(schedule, "1")
+
         except Exception:
             slot = "1"
 
@@ -217,6 +235,7 @@ def make_script():
             result = json.loads(response.read().decode("utf-8"))
 
         choices = result.get("choices") or []
+
         if not choices:
             raise ValueError("Нейросеть не вернула ответ.")
 
@@ -299,6 +318,46 @@ def make_script():
         return make_fallback_script()
 
 
+def load_or_create_script():
+    script_file = OUT / "last_script.json"
+
+    # Если GitHub восстановил прошлый сценарий из кэша,
+    # используем его, а не создаём новый.
+    if valid_file(script_file, 20):
+        try:
+            data = json.loads(
+                script_file.read_text(encoding="utf-8")
+            )
+
+            if (
+                isinstance(data, dict)
+                and data.get("title")
+                and data.get("voiceover")
+                and isinstance(data.get("scenes"), list)
+                and len(data["scenes"]) == 3
+            ):
+                data["hero"] = choose_hero(
+                    data["title"],
+                    data["voiceover"]
+                )
+
+                print("Найден сохранённый сценарий.")
+                print("Продолжаем предыдущую генерацию.")
+                return data
+
+        except Exception as error:
+            print("Не удалось прочитать сохранённый сценарий:", error)
+
+    data = make_script()
+
+    script_file.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8"
+    )
+
+    return data
+
+
 def make_voice(text, path, category="HOME"):
     wav = path.with_suffix(".wav")
 
@@ -324,7 +383,7 @@ def make_voice(text, path, category="HOME"):
         check=True
     )
 
-    if not wav.exists() or wav.stat().st_size < 1000:
+    if not valid_file(wav, 1000):
         raise RuntimeError("Не удалось создать WAV.")
 
     subprocess.run(
@@ -347,6 +406,10 @@ def make_voice(text, path, category="HOME"):
     )
 
     wav.unlink(missing_ok=True)
+
+    if not valid_file(path, 1000):
+        raise RuntimeError("MP3-файл озвучки не создан.")
+
     print("Озвучка создана:", path)
 
 
@@ -362,10 +425,12 @@ def make_subtitles(text, audio_path, subtitle_path):
     )
 
     duration = float(probe.strip())
+
     sentences = re.split(
         r"(?<=[.!?])\s+",
         clean_text(text, 2000)
     )
+
     sentences = [s.strip() for s in sentences if s.strip()]
 
     if not sentences:
@@ -385,7 +450,11 @@ def make_subtitles(text, audio_path, subtitle_path):
         minutes = (ms % 3600000) // 60000
         seconds_part = (ms % 60000) // 1000
         millis = ms % 1000
-        return f"{hours:02}:{minutes:02}:{seconds_part:02},{millis:03}"
+
+        return (
+            f"{hours:02}:{minutes:02}:"
+            f"{seconds_part:02},{millis:03}"
+        )
 
     lines = []
 
@@ -416,24 +485,34 @@ def find_value(data, names):
     if isinstance(data, dict):
         for name in names:
             value = data.get(name)
+
             if value not in (None, ""):
                 return value
 
         for value in data.values():
             found = find_value(value, names)
+
             if found not in (None, ""):
                 return found
 
     elif isinstance(data, list):
         for item in data:
             found = find_value(item, names)
+
             if found not in (None, ""):
                 return found
 
     return None
 
 
-def agnes_request(url, method="GET", payload=None, timeout=120):
+def agnes_request(
+    url,
+    method="GET",
+    payload=None,
+    timeout=120,
+    queue_wait_seconds=0,
+    max_retries=8
+):
     api_key = os.getenv("AGNES_API_KEY", "").strip()
 
     if not api_key:
@@ -450,9 +529,17 @@ def agnes_request(url, method="GET", payload=None, timeout=120):
         headers["Content-Type"] = "application/json"
         body = json.dumps(payload).encode("utf-8")
 
-    retry_codes = (429, 500, 502, 503, 504)
+    method = method.upper()
 
-    for attempt in range(5):
+    queue_deadline = (
+        time.monotonic() + queue_wait_seconds
+        if queue_wait_seconds > 0
+        else None
+    )
+
+    attempt = 0
+
+    while True:
         request = urllib.request.Request(
             url,
             data=body,
@@ -462,43 +549,123 @@ def agnes_request(url, method="GET", payload=None, timeout=120):
 
         try:
             with urllib.request.urlopen(
-                request, timeout=timeout
+                request,
+                timeout=timeout
             ) as response:
                 raw = response.read().decode("utf-8")
                 return json.loads(raw)
 
         except urllib.error.HTTPError as error:
             details = error.read().decode(
-                "utf-8", errors="replace"
-            )[:2000]
+                "utf-8",
+                errors="replace"
+            )[:3000]
 
-            if error.code in retry_codes and attempt < 4:
-                delay = min(90, 15 * (2 ** attempt))
+            # POST повторяем только при явном отказе очереди
+            # или ограничении частоты запросов.
+            is_queue_full = (
+                error.code == 503
+                and "video_queue_full" in details.lower()
+            )
+
+            is_rate_limited = error.code == 429
+
+            if (
+                method == "POST"
+                and queue_deadline is not None
+                and (is_queue_full or is_rate_limited)
+            ):
+                remaining = queue_deadline - time.monotonic()
+
+                if remaining <= 0:
+                    raise RuntimeError(
+                        "Agnes не освободил очередь за 60 минут. "
+                        "Последняя ошибка: " + details
+                    )
+
+                retry_after = error.headers.get("Retry-After")
+
+                try:
+                    delay = float(retry_after)
+                except (TypeError, ValueError):
+                    delay = min(30 * (attempt + 1), 180)
+
+                delay = max(5, min(delay, 180, remaining))
+
+                attempt += 1
+
+                print()
+                print("Очередь Agnes переполнена или ограничена.")
+                print(f"Попытка ожидания: {attempt}")
+                print(f"Повторная отправка через {int(delay)} секунд.")
                 print(
-                    f"Agnes HTTP {error.code}. "
-                    f"Повтор через {delay} секунд."
+                    "Оставшееся время ожидания:",
+                    int(remaining // 60),
+                    "мин."
                 )
+                print()
+
                 time.sleep(delay)
                 continue
+
+            # GET-запросы можно безопасно повторять.
+            retry_codes = (429, 500, 502, 503, 504)
+
+            if method == "GET" and error.code in retry_codes:
+                if attempt < max_retries:
+                    delay = min(10 * (2 ** attempt), 120)
+                    attempt += 1
+
+                    print(
+                        f"Ошибка Agnes HTTP {error.code}. "
+                        f"Повтор GET через {delay} секунд."
+                    )
+
+                    time.sleep(delay)
+                    continue
 
             raise RuntimeError(
                 f"Agnes API HTTP {error.code}: {details}"
             )
 
-        except (urllib.error.URLError, TimeoutError) as error:
-            if attempt == 4:
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            OSError
+        ) as error:
+
+            # Не повторяем POST после неизвестной сетевой ошибки:
+            # сервер мог принять задачу, даже если ответ потерялся.
+            if method == "POST":
+                raise RuntimeError(
+                    "Сетевая ошибка при отправке задачи Agnes. "
+                    "Не повторяем POST автоматически, чтобы не "
+                    "создать дублирующую задачу: " + str(error)
+                )
+
+            if attempt >= max_retries:
                 raise RuntimeError(
                     f"Ошибка соединения с Agnes: {error}"
                 )
 
-            delay = 10 * (attempt + 1)
-            print(f"Ошибка соединения. Повтор через {delay} секунд.")
-            time.sleep(delay)
+            delay = min(10 * (2 ** attempt), 120)
+            attempt += 1
 
-    raise RuntimeError("Не удалось выполнить запрос Agnes API.")
+            print(
+                f"Проблема соединения. Повтор через {delay} секунд."
+            )
+
+            time.sleep(delay)
 
 
 def create_agnes_video(prompt, output_path):
+    output_path = Path(output_path)
+
+    # Не генерируем повторно уже скачанную сцену.
+    if valid_file(output_path):
+        print("Найдена готовая сцена. Пропускаем Agnes:", output_path)
+        return output_path
+
     print("Отправляем сцену в Agnes AI...")
     print("Модель:", AGNES_MODEL)
 
@@ -516,7 +683,8 @@ def create_agnes_video(prompt, output_path):
         AGNES_BASE + "/v1/videos",
         method="POST",
         payload=payload,
-        timeout=180
+        timeout=180,
+        queue_wait_seconds=QUEUE_WAIT_SECONDS
     )
 
     video_id = find_value(result, ["video_id"])
@@ -532,10 +700,10 @@ def create_agnes_video(prompt, output_path):
 
     print("Задача Agnes создана:", video_id)
 
-    started = time.time()
+    started = time.monotonic()
     video_url = None
 
-    while time.time() - started < MAX_WAIT_SECONDS:
+    while time.monotonic() - started < MAX_WAIT_SECONDS:
         time.sleep(POLL_INTERVAL)
 
         query = urlencode({
@@ -545,7 +713,8 @@ def create_agnes_video(prompt, output_path):
 
         status_data = agnes_request(
             AGNES_BASE + "/agnesapi?" + query,
-            timeout=120
+            timeout=120,
+            max_retries=8
         )
 
         status = str(
@@ -553,39 +722,58 @@ def create_agnes_video(prompt, output_path):
         ).lower()
 
         progress = find_value(
-            status_data, ["progress", "percentage"]
+            status_data,
+            ["progress", "percentage"]
         )
 
         if progress is not None:
             print("Прогресс сцены:", progress)
 
-        # В новой версии Agnes ссылка обычно находится
-        # внутри metadata.url.
         metadata = status_data.get("metadata", {})
+
         if not isinstance(metadata, dict):
             metadata = {}
 
         video_url = (
             metadata.get("url")
-            or find_value(status_data, ["video_url", "download_url"])
+            or metadata.get("video_url")
+            or find_value(
+                status_data,
+                ["video_url", "download_url"]
+            )
             or status_data.get("url")
         )
 
         if status in (
-            "completed", "complete", "success",
-            "succeeded", "done"
+            "completed",
+            "complete",
+            "success",
+            "succeeded",
+            "done"
         ):
             if not video_url:
                 raise RuntimeError(
                     "Agnes сообщил о готовности, но не вернул URL: "
-                    + json.dumps(status_data, ensure_ascii=False)[:2000]
+                    + json.dumps(
+                        status_data,
+                        ensure_ascii=False
+                    )[:2000]
                 )
+
             break
 
-        if status in ("failed", "error", "cancelled", "canceled"):
+        if status in (
+            "failed",
+            "error",
+            "cancelled",
+            "canceled"
+        ):
             raise RuntimeError(
                 "Генерация Agnes завершилась ошибкой: "
-                + json.dumps(status_data, ensure_ascii=False)[:2000]
+                + json.dumps(
+                    status_data,
+                    ensure_ascii=False
+                )[:2000]
             )
 
         print(
@@ -595,7 +783,7 @@ def create_agnes_video(prompt, output_path):
 
     else:
         raise TimeoutError(
-            "Agnes не успел создать сцену за 30 минут."
+            "Agnes не успел создать сцену за 60 минут."
         )
 
     parsed = urlparse(str(video_url))
@@ -610,15 +798,26 @@ def create_agnes_video(prompt, output_path):
         headers={"User-Agent": "AI-Shorts-Factory"}
     )
 
-    with urllib.request.urlopen(
-        download_request, timeout=240
-    ) as response:
-        output_path.write_bytes(response.read())
+    temporary_file = output_path.with_name(
+        output_path.stem + "_download.mp4"
+    )
 
-    if not output_path.exists() or output_path.stat().st_size < 10000:
-        raise RuntimeError("Скачанный видеофайл пустой или повреждён.")
+    with urllib.request.urlopen(
+        download_request,
+        timeout=240
+    ) as response:
+        temporary_file.write_bytes(response.read())
+
+    if not valid_file(temporary_file):
+        temporary_file.unlink(missing_ok=True)
+        raise RuntimeError(
+            "Скачанный видеофайл пустой или повреждён."
+        )
+
+    temporary_file.replace(output_path)
 
     print("Сцена скачана:", output_path)
+
     return output_path
 
 
@@ -658,6 +857,37 @@ def build_scene_prompt(data, scene, scene_number):
     )
 
 
+def normalize_scene(raw_video, normalized_video, index):
+    print("Подготавливаем сцену", index)
+
+    normalized_video.unlink(missing_ok=True)
+
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-loglevel", "error",
+            "-i", str(raw_video),
+            "-an",
+            "-vf",
+            "scale=720:1280:force_original_aspect_ratio=increase,"
+            "crop=720:1280,fps=24,setsar=1,format=yuv420p",
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "20",
+            "-movflags", "+faststart",
+            str(normalized_video)
+        ],
+        check=True
+    )
+
+    if not valid_file(normalized_video):
+        raise RuntimeError(
+            f"Не удалось подготовить сцену {index}."
+        )
+
+    print("Подготовленная сцена сохранена:", normalized_video)
+
+
 def render(data, audio_path, video_path):
     print("Запускаем генерацию видео через Agnes AI.")
     print("Используется модель:", AGNES_MODEL)
@@ -673,32 +903,36 @@ def render(data, audio_path, video_path):
         raw_video = OUT / f"scene_{index}_raw.mp4"
         normalized_video = OUT / f"scene_{index}.mp4"
 
+        print()
+        print(f"ПРОВЕРКА СЦЕНЫ {index} ИЗ 3")
+
+        # Сначала проверяем уже подготовленную сцену.
+        if valid_file(normalized_video):
+            print("Сцена уже готова. Повторно не генерируем.")
+            scene_files.append(normalized_video)
+            continue
+
+        # Если исходное видео скачано, но не обработано,
+        # используем его без нового обращения к Agnes.
+        if valid_file(raw_video):
+            print("Найдено сохранённое исходное видео.")
+            normalize_scene(
+                raw_video,
+                normalized_video,
+                index
+            )
+            scene_files.append(normalized_video)
+            continue
+
         print(f"Генерируем сцену {index} из 3...")
 
         create_agnes_video(prompt, raw_video)
 
-        print("Подготавливаем сцену...")
-
-        subprocess.run(
-            [
-                "ffmpeg", "-y",
-                "-loglevel", "error",
-                "-i", str(raw_video),
-                "-an",
-                "-vf",
-                "scale=720:1280:force_original_aspect_ratio=increase,"
-                "crop=720:1280,fps=24,setsar=1,format=yuv420p",
-                "-c:v", "libx264",
-                "-preset", "veryfast",
-                "-crf", "20",
-                "-movflags", "+faststart",
-                str(normalized_video)
-            ],
-            check=True
+        normalize_scene(
+            raw_video,
+            normalized_video,
+            index
         )
-
-        if not normalized_video.exists() or normalized_video.stat().st_size < 10000:
-            raise RuntimeError(f"Не удалось подготовить сцену {index}.")
 
         scene_files.append(normalized_video)
 
@@ -716,6 +950,8 @@ def render(data, audio_path, video_path):
 
     print("Объединяем три сцены...")
 
+    silent_video.unlink(missing_ok=True)
+
     subprocess.run(
         [
             "ffmpeg", "-y",
@@ -729,7 +965,7 @@ def render(data, audio_path, video_path):
         check=True
     )
 
-    if not silent_video.exists() or silent_video.stat().st_size < 30000:
+    if not valid_file(silent_video, 30000):
         raise RuntimeError("Не удалось объединить сцены.")
 
     audio_duration = float(subprocess.check_output(
@@ -752,11 +988,21 @@ def render(data, audio_path, video_path):
         text=True
     ).strip())
 
-    duration = min(audio_duration, video_duration, MAX_DURATION)
+    duration = min(
+        audio_duration,
+        video_duration,
+        MAX_DURATION
+    )
+
     duration = max(1.0, duration)
 
     subtitle_path = OUT / "subtitles.srt"
-    make_subtitles(data["voiceover"], audio_path, subtitle_path)
+
+    make_subtitles(
+        data["voiceover"],
+        audio_path,
+        subtitle_path
+    )
 
     subtitle_filter = (
         "subtitles="
@@ -767,6 +1013,8 @@ def render(data, audio_path, video_path):
     )
 
     print("Собираем финальное видео с озвучкой...")
+
+    video_path.unlink(missing_ok=True)
 
     command = [
         "ffmpeg", "-y",
@@ -793,6 +1041,8 @@ def render(data, audio_path, video_path):
     except subprocess.CalledProcessError:
         print("Не удалось вшить субтитры. Повторяем без них.")
 
+        video_path.unlink(missing_ok=True)
+
         subprocess.run(
             [
                 "ffmpeg", "-y",
@@ -814,7 +1064,7 @@ def render(data, audio_path, video_path):
             check=True
         )
 
-    if not video_path.exists() or video_path.stat().st_size < 30000:
+    if not valid_file(video_path, 30000):
         raise RuntimeError("Финальное видео не создано.")
 
     print("Готовое видео:", video_path)
@@ -835,7 +1085,11 @@ def upload(video_path, data):
 
     if creds.expired and creds.refresh_token:
         creds.refresh(Request())
-        token_file.write_text(creds.to_json(), encoding="utf-8")
+
+        token_file.write_text(
+            creds.to_json(),
+            encoding="utf-8"
+        )
 
     yt = build("youtube", "v3", credentials=creds)
 
@@ -847,7 +1101,10 @@ def upload(video_path, data):
             "defaultLanguage": "ru"
         },
         "status": {
-            "privacyStatus": os.getenv("YOUTUBE_PRIVACY", "private"),
+            "privacyStatus": os.getenv(
+                "YOUTUBE_PRIVACY",
+                "private"
+            ),
             "selfDeclaredMadeForKids": False
         }
     }
@@ -863,6 +1120,7 @@ def upload(video_path, data):
     )
 
     response = request.execute()
+
     print("YOUTUBE_VIDEO_ID=" + response["id"])
 
 
@@ -872,27 +1130,39 @@ def main():
     print("================================")
 
     if not os.getenv("AGNES_API_KEY", "").strip():
-        raise RuntimeError("Добавь секрет AGNES_API_KEY в GitHub.")
+        raise RuntimeError(
+            "Добавь секрет AGNES_API_KEY в GitHub."
+        )
 
-    data = make_script()
-
-    (OUT / "last_script.json").write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8"
-    )
+    data = load_or_create_script()
 
     audio = OUT / "voice.mp3"
     video = OUT / "short.mp4"
 
-    print("Создаём русскую озвучку...")
-    make_voice(data["voiceover"], audio, data["category"])
+    print("Проверяем русскую озвучку...")
+
+    if valid_file(audio, 1000):
+        print("Найдена сохранённая озвучка. Повторно не создаём.")
+    else:
+        print("Создаём русскую озвучку...")
+        make_voice(
+            data["voiceover"],
+            audio,
+            data.get("category", "HOME")
+        )
 
     print("Создаём AI-видео...")
+
     render(data, audio, video)
 
-    if os.getenv("UPLOAD_TO_YOUTUBE", "false").lower() == "true":
+    if os.getenv(
+        "UPLOAD_TO_YOUTUBE",
+        "false"
+    ).lower() == "true":
+
         print("Загружаем видео на YouTube...")
         upload(video, data)
+
     else:
         print("Загрузка на YouTube отключена.")
 
