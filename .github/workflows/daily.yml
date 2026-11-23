@@ -56,7 +56,7 @@ jobs:
           UPLOAD_TO_YOUTUBE: 'true'
           YOUTUBE_PRIVACY: 'private'
         run: |
-          python src/generate.py
+          python -u src/generate.py
 
       - name: Upload generated files as artifact
         if: always()
