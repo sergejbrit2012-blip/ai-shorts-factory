@@ -358,6 +358,8 @@ def load_or_create_script():
 
 # НОВАЯ ОЗВУЧКА EDGE TTS
 
+# EDGE TTS + АВТОМАТИЧЕСКИЙ РЕЗЕРВ ESPEAK-NG
+
 def make_voice(text, path, category="HOME"):
     path = Path(path)
     text = clean_text(text, 2000)
@@ -367,6 +369,9 @@ def make_voice(text, path, category="HOME"):
         raise RuntimeError("Нет русского текста для озвучки.")
 
     voice = "ru-RU-DmitryNeural"
+    success = False
+
+    print("Создаём естественную русскую озвучку Edge TTS...")
 
     async def generate_audio():
         communicate = edge_tts.Communicate(
@@ -378,13 +383,54 @@ def make_voice(text, path, category="HOME"):
         )
         await communicate.save(str(path))
 
-    print("Создаём естественную русскую озвучку Edge TTS...")
+    for attempt in range(1, 4):
+        try:
+            path.unlink(missing_ok=True)
+            asyncio.run(generate_audio())
 
-    asyncio.run(generate_audio())
+            if valid_file(path, 1000):
+                success = True
+                print("Edge TTS успешно создал озвучку.")
+                break
 
-    if not valid_file(path, 1000):
-        raise RuntimeError("Edge TTS не создал аудиофайл.")
+            print("Edge TTS создал пустой файл.")
 
+        except Exception as error:
+            print(f"Ошибка Edge TTS, попытка {attempt}/3:")
+            print(error)
+
+        if attempt < 3:
+            delay = attempt * 10
+            print(f"Повторяем через {delay} секунд...")
+            time.sleep(delay)
+
+    # Резервная озвучка через eSpeak NG
+    if not success:
+        print("Edge TTS недоступен. Запускаем резервную озвучку eSpeak NG.")
+
+        wav_path = path.with_suffix(".wav")
+        wav_path.unlink(missing_ok=True)
+        path.unlink(missing_ok=True)
+
+        subprocess.run(
+            [
+                "espeak-ng",
+                "-v", "ru",
+                "-s", "155",
+                "-w", str(wav_path),
+                text
+            ],
+            check=True
+        )
+
+        if not valid_file(wav_path, 1000):
+            raise RuntimeError("Резервная озвучка eSpeak NG не создана.")
+
+        wav_path.replace(path)
+
+        print("Резервная озвучка создана.")
+
+    # Обработка звука
     processed = path.with_name(path.stem + "_processed.mp3")
 
     subprocess.run(
@@ -411,8 +457,7 @@ def make_voice(text, path, category="HOME"):
 
     processed.replace(path)
 
-    print("Новая озвучка создана:", path)
-
+    print("Озвучка готова:", path)
 
 def make_subtitles(text, audio_path, subtitle_path):
     probe = subprocess.check_output(
