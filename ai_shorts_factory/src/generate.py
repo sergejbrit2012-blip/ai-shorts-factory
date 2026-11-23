@@ -2,9 +2,12 @@ import os
 import json
 import re
 import time
+import asyncio
 import urllib.request
 import urllib.error
 import subprocess
+import edge_tts
+
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse, urlencode
@@ -21,10 +24,7 @@ AGNES_MODEL = "agnes-video-2.5-flash"
 SCENE_SECONDS = "12"
 POLL_INTERVAL = 15
 
-# До часа ожидания свободного места в очереди.
 QUEUE_WAIT_SECONDS = 60 * 60
-
-# До часа ожидания готовности уже принятой задачи.
 MAX_WAIT_SECONDS = 60 * 60
 
 HERO_RULES = {
@@ -321,8 +321,6 @@ def make_script():
 def load_or_create_script():
     script_file = OUT / "last_script.json"
 
-    # Если GitHub восстановил прошлый сценарий из кэша,
-    # используем его, а не создаём новый.
     if valid_file(script_file, 20):
         try:
             data = json.loads(
@@ -358,39 +356,42 @@ def load_or_create_script():
     return data
 
 
-def make_voice(text, path, category="HOME"):
-    wav = path.with_suffix(".wav")
+# НОВАЯ ОЗВУЧКА EDGE TTS
 
+def make_voice(text, path, category="HOME"):
+    path = Path(path)
     text = clean_text(text, 2000)
     text = re.sub(r"[*_`#]", "", text)
 
     if not text or not re.search(r"[а-яА-ЯёЁ]", text):
         raise RuntimeError("Нет русского текста для озвучки.")
 
-    subprocess.run(
-        [
-            "espeak-ng",
-            "-v", "ru",
-            "-s", "125",
-            "-p", "48",
-            "-a", "175",
-            "-g", "10",
-            "-w", str(wav),
-            "--stdin"
-        ],
-        input=text,
-        text=True,
-        check=True
-    )
+    voice = "ru-RU-DmitryNeural"
 
-    if not valid_file(wav, 1000):
-        raise RuntimeError("Не удалось создать WAV.")
+    async def generate_audio():
+        communicate = edge_tts.Communicate(
+            text=text,
+            voice=voice,
+            rate="-5%",
+            pitch="+0Hz",
+            volume="+0%"
+        )
+        await communicate.save(str(path))
+
+    print("Создаём естественную русскую озвучку Edge TTS...")
+
+    asyncio.run(generate_audio())
+
+    if not valid_file(path, 1000):
+        raise RuntimeError("Edge TTS не создал аудиофайл.")
+
+    processed = path.with_name(path.stem + "_processed.mp3")
 
     subprocess.run(
         [
             "ffmpeg", "-y",
             "-loglevel", "error",
-            "-i", str(wav),
+            "-i", str(path),
             "-af",
             "highpass=f=80,lowpass=f=11000,"
             "acompressor=threshold=0.12:ratio=2.5:attack=15:release=180,"
@@ -400,17 +401,17 @@ def make_voice(text, path, category="HOME"):
             "-ac", "2",
             "-codec:a", "libmp3lame",
             "-b:a", "160k",
-            str(path)
+            str(processed)
         ],
         check=True
     )
 
-    wav.unlink(missing_ok=True)
+    if not valid_file(processed, 1000):
+        raise RuntimeError("Не удалось обработать аудио.")
 
-    if not valid_file(path, 1000):
-        raise RuntimeError("MP3-файл озвучки не создан.")
+    processed.replace(path)
 
-    print("Озвучка создана:", path)
+    print("Новая озвучка создана:", path)
 
 
 def make_subtitles(text, audio_path, subtitle_path):
@@ -561,8 +562,6 @@ def agnes_request(
                 errors="replace"
             )[:3000]
 
-            # POST повторяем только при явном отказе очереди
-            # или ограничении частоты запросов.
             is_queue_full = (
                 error.code == 503
                 and "video_queue_full" in details.lower()
@@ -608,7 +607,6 @@ def agnes_request(
                 time.sleep(delay)
                 continue
 
-            # GET-запросы можно безопасно повторять.
             retry_codes = (429, 500, 502, 503, 504)
 
             if method == "GET" and error.code in retry_codes:
@@ -634,8 +632,6 @@ def agnes_request(
             OSError
         ) as error:
 
-            # Не повторяем POST после неизвестной сетевой ошибки:
-            # сервер мог принять задачу, даже если ответ потерялся.
             if method == "POST":
                 raise RuntimeError(
                     "Сетевая ошибка при отправке задачи Agnes. "
@@ -661,7 +657,6 @@ def agnes_request(
 def create_agnes_video(prompt, output_path):
     output_path = Path(output_path)
 
-    # Не генерируем повторно уже скачанную сцену.
     if valid_file(output_path):
         print("Найдена готовая сцена. Пропускаем Agnes:", output_path)
         return output_path
@@ -906,14 +901,11 @@ def render(data, audio_path, video_path):
         print()
         print(f"ПРОВЕРКА СЦЕНЫ {index} ИЗ 3")
 
-        # Сначала проверяем уже подготовленную сцену.
         if valid_file(normalized_video):
             print("Сцена уже готова. Повторно не генерируем.")
             scene_files.append(normalized_video)
             continue
 
-        # Если исходное видео скачано, но не обработано,
-        # используем его без нового обращения к Agnes.
         if valid_file(raw_video):
             print("Найдено сохранённое исходное видео.")
             normalize_scene(
@@ -1136,15 +1128,15 @@ def main():
 
     data = load_or_create_script()
 
-    audio = OUT / "voice.mp3"
+    audio = OUT / "voice_edge.mp3"
     video = OUT / "short.mp4"
 
     print("Проверяем русскую озвучку...")
 
     if valid_file(audio, 1000):
-        print("Найдена сохранённая озвучка. Повторно не создаём.")
+        print("Найдена сохранённая озвучка Edge TTS.")
     else:
-        print("Создаём русскую озвучку...")
+        print("Создаём русскую озвучку Edge TTS...")
         make_voice(
             data["voiceover"],
             audio,
