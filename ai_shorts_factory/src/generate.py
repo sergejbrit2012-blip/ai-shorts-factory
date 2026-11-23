@@ -551,12 +551,13 @@ def find_value(data, names):
     return None
 
 
+
 def agnes_request(
     url,
     method="GET",
     payload=None,
     timeout=120,
-    queue_wait_seconds=0,
+    queue_wait_seconds=600,
     max_retries=8
 ):
     api_key = os.getenv("AGNES_API_KEY", "").strip()
@@ -577,9 +578,12 @@ def agnes_request(
 
     method = method.upper()
 
+    # Не ждём очередь дольше 10 минут
+    queue_wait_seconds = min(queue_wait_seconds, 600)
+
     queue_deadline = (
         time.monotonic() + queue_wait_seconds
-        if queue_wait_seconds > 0
+        if method == "POST" and queue_wait_seconds > 0
         else None
     )
 
@@ -608,8 +612,8 @@ def agnes_request(
             )[:3000]
 
             is_queue_full = (
-                error.code == 503
-                and "video_queue_full" in details.lower()
+                "video_queue_full" in details.lower()
+                or "queue is full" in details.lower()
             )
 
             is_rate_limited = error.code == 429
@@ -623,7 +627,8 @@ def agnes_request(
 
                 if remaining <= 0:
                     raise RuntimeError(
-                        "Agnes не освободил очередь за 60 минут. "
+                        "Agnes не освободил очередь за 10 минут. "
+                        "Запуск остановлен без бесконечного ожидания. "
                         "Последняя ошибка: " + details
                     )
 
@@ -632,18 +637,18 @@ def agnes_request(
                 try:
                     delay = float(retry_after)
                 except (TypeError, ValueError):
-                    delay = min(30 * (attempt + 1), 180)
+                    delay = min(30 * (attempt + 1), 120)
 
-                delay = max(5, min(delay, 180, remaining))
+                delay = max(5, min(delay, 120, remaining))
 
                 attempt += 1
 
                 print()
-                print("Очередь Agnes переполнена или ограничена.")
+                print("Agnes временно перегружен.")
                 print(f"Попытка ожидания: {attempt}")
-                print(f"Повторная отправка через {int(delay)} секунд.")
+                print(f"Следующая попытка через {int(delay)} секунд.")
                 print(
-                    "Оставшееся время ожидания:",
+                    "Осталось времени:",
                     int(remaining // 60),
                     "мин."
                 )
@@ -697,6 +702,7 @@ def agnes_request(
             )
 
             time.sleep(delay)
+
 
 
 def create_agnes_video(prompt, output_path):
