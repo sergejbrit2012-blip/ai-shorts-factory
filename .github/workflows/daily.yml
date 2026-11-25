@@ -25,7 +25,9 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg espeak-ng
+          sudo apt-get install -y ffmpeg espeak-ng blender
+          blender --version
+          ffmpeg -version
 
       - name: Setup Python
         uses: actions/setup-python@v5
